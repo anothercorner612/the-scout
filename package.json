@@ -1,0 +1,18 @@
+{
+  "name": "the-scout",
+  "version": "1.0.0",
+  "description": "AI-powered job hunter for Creative-Technical Program Management roles",
+  "type": "module",
+  "main": "hunter.js",
+  "scripts": {
+    "hunt": "node hunter.js",
+    "dashboard": "streamlit run dashboard.py"
+  },
+  "dependencies": {
+    "@google/genai": "^1.43.0",
+    "better-sqlite3": "^11.0.0",
+    "chalk": "^5.4.0",
+    "dotenv": "^16.4.0",
+    "ora": "^8.0.0"
+  }
+}
