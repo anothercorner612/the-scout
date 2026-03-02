@@ -301,48 +301,81 @@ st.markdown("""
 # ============================================================
 
 class TursoConnection:
-    """Wrapper around libsql_client that mimics sqlite3.Connection for our usage."""
+    """Talk to Turso via its HTTP pipeline API using httpx. No WebSocket needed."""
 
     def __init__(self, url, auth_token):
-        import libsql_client
-        # Convert libsql:// to https:// to use HTTP instead of WebSocket
-        # (Streamlit Cloud blocks outbound WebSocket connections)
-        http_url = url.replace("libsql://", "https://")
-        self._client = libsql_client.create_client_sync(
-            url=http_url,
-            auth_token=auth_token,
-        )
+        import httpx as _httpx
+        self._base = url.replace("libsql://", "https://")
+        self._token = auth_token
+        self._http = _httpx.Client(timeout=30.0)
 
     def execute(self, sql, params=None):
-        # Convert ? placeholders to positional args list
         args = list(params) if params else []
-        rs = self._client.execute(sql, args)
-        return TursoCursor(rs)
+        # Build Turso v2 pipeline request
+        stmt = {"sql": sql}
+        if args:
+            stmt["args"] = [_turso_val(a) for a in args]
+        body = {"requests": [
+            {"type": "execute", "stmt": stmt},
+            {"type": "close"},
+        ]}
+        resp = self._http.post(
+            f"{self._base}/v2/pipeline",
+            json=body,
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("results", [{}])[0].get("response", {}).get("result", {})
+        cols = [c.get("name", "") for c in result.get("cols", [])]
+        rows = []
+        for row in result.get("rows", []):
+            rows.append(tuple(_from_turso_val(v) for v in row))
+        return TursoCursor(cols, rows)
 
     def commit(self):
-        pass  # libsql_client auto-commits
+        pass  # auto-commit
 
     def close(self):
-        self._client.close()
+        self._http.close()
+
+
+def _turso_val(v):
+    """Convert a Python value to Turso API value format."""
+    if v is None:
+        return {"type": "null", "value": None}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": v}
+    return {"type": "text", "value": str(v)}
+
+
+def _from_turso_val(v):
+    """Convert a Turso API value back to Python."""
+    if v is None or v.get("type") == "null":
+        return None
+    val = v.get("value")
+    if v.get("type") == "integer":
+        return int(val)
+    if v.get("type") == "float":
+        return float(val)
+    return val
 
 
 class TursoCursor:
-    """Wraps a libsql_client ResultSet to look like a sqlite3 cursor."""
+    """Mimics sqlite3 cursor from Turso HTTP API results."""
 
-    def __init__(self, result_set):
-        self._rs = result_set
-        self._rows = list(result_set.rows) if result_set.rows else []
-        self._columns = result_set.columns if result_set.columns else []
+    def __init__(self, columns, rows):
+        self._columns = columns
+        self._rows = rows
 
     @property
     def description(self):
-        # Return list of (name, ...) tuples like sqlite3 cursor.description
         return [(col, None, None, None, None, None, None) for col in self._columns]
 
     def fetchone(self):
-        if self._rows:
-            return self._rows[0]
-        return None
+        return self._rows[0] if self._rows else None
 
     def fetchall(self):
         return self._rows
