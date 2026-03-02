@@ -300,16 +300,67 @@ st.markdown("""
 # DATABASE CONNECTION + SCHEMA
 # ============================================================
 
+class TursoConnection:
+    """Wrapper around libsql_client that mimics sqlite3.Connection for our usage."""
+
+    def __init__(self, url, auth_token):
+        import libsql_client
+        self._client = libsql_client.create_client_sync(
+            url=url,
+            auth_token=auth_token,
+        )
+
+    def execute(self, sql, params=None):
+        # Convert ? placeholders to positional args list
+        args = list(params) if params else []
+        rs = self._client.execute(sql, args)
+        return TursoCursor(rs)
+
+    def commit(self):
+        pass  # libsql_client auto-commits
+
+    def close(self):
+        self._client.close()
+
+
+class TursoCursor:
+    """Wraps a libsql_client ResultSet to look like a sqlite3 cursor."""
+
+    def __init__(self, result_set):
+        self._rs = result_set
+        self._rows = list(result_set.rows) if result_set.rows else []
+        self._columns = result_set.columns if result_set.columns else []
+
+    @property
+    def description(self):
+        # Return list of (name, ...) tuples like sqlite3 cursor.description
+        return [(col, None, None, None, None, None, None) for col in self._columns]
+
+    def fetchone(self):
+        if self._rows:
+            return self._rows[0]
+        return None
+
+    def fetchall(self):
+        return self._rows
+
+
 @st.cache_resource
 def get_connection():
     if USE_TURSO:
-        import libsql_experimental as libsql
-        return libsql.connect(
-            "the-scout",
-            sync_url=_turso_url,
-            auth_token=_turso_token,
-        )
+        return TursoConnection(_turso_url, _turso_token)
     return sqlite3.connect(str(DB_PATH), check_same_thread=False)
+
+
+def query_df(sql, params=None):
+    """Run a query and return a DataFrame. Works with both sqlite3 and Turso."""
+    conn = get_connection()
+    if isinstance(conn, TursoConnection):
+        cursor = conn.execute(sql, params or ())
+        if cursor._columns:
+            return pd.DataFrame(cursor.fetchall(), columns=cursor._columns)
+        return pd.DataFrame()
+    return pd.read_sql(sql, conn, params=params)
 
 
 def ensure_schema():
@@ -558,8 +609,7 @@ Return ONLY the scoring system prompt text, nothing else.""",
 
 def load_jobs_for_user(user_id: int):
     """Load jobs with per-user overlay (score, status, materials from user_jobs)."""
-    conn = get_connection()
-    return pd.read_sql("""
+    return query_df("""
         SELECT j.id, j.url, j.title, j.company, j.platform, j.description,
             j.posted_at, j.hiring_manager_name, j.hiring_manager_title,
             j.company_win, j.salary_min, j.salary_max, j.salary_source,
@@ -576,13 +626,12 @@ def load_jobs_for_user(user_id: int):
         FROM jobs j
         LEFT JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ?
         ORDER BY COALESCE(uj.score, j.score) DESC
-    """, conn, params=(user_id,))
+    """, params=(user_id,))
 
 
 def load_jobs_legacy():
     """Load jobs for legacy (no user) mode."""
-    conn = get_connection()
-    return pd.read_sql("SELECT * FROM jobs ORDER BY score DESC", conn)
+    return query_df("SELECT * FROM jobs ORDER BY score DESC")
 
 
 def update_user_job_status(user_id: int, job_id: int, new_status: str):
@@ -616,12 +665,10 @@ def save_user_materials(user_id: int, job_id: int, materials: dict):
 
 
 def load_last_run():
-    conn = get_connection()
     try:
-        return pd.read_sql(
-            "SELECT * FROM run_log ORDER BY id DESC LIMIT 1", conn
-        ).to_dict("records")[0]
-    except (IndexError, Exception):
+        df = query_df("SELECT * FROM run_log ORDER BY id DESC LIMIT 1")
+        return df.to_dict("records")[0] if not df.empty else None
+    except Exception:
         return None
 
 
@@ -816,11 +863,10 @@ Return ONLY the answer text."""
 
 
 def load_contacts(user_id=None):
-    conn = get_connection()
     try:
         if user_id:
-            return pd.read_sql("SELECT * FROM contacts WHERE user_id = ?", conn, params=(user_id,))
-        return pd.read_sql("SELECT * FROM contacts", conn)
+            return query_df("SELECT * FROM contacts WHERE user_id = ?", params=(user_id,))
+        return query_df("SELECT * FROM contacts")
     except Exception:
         return pd.DataFrame()
 
