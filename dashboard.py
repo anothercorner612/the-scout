@@ -391,7 +391,7 @@ def get_connection():
 def query_df(sql, params=None):
     """Run a query and return a DataFrame. Works with both sqlite3 and Turso."""
     conn = get_connection()
-    if isinstance(conn, TursoConnection):
+    if USE_TURSO:
         cursor = conn.execute(sql, params or ())
         if cursor._columns:
             return pd.DataFrame(cursor.fetchall(), columns=cursor._columns)
