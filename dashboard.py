@@ -1084,7 +1084,10 @@ if not current_user:
     st.rerun()
 
 # Check if profile needs setup (no resume yet)
-needs_setup = not current_user.get("resume_json") and not st.session_state.get("profile_setup_done")
+# Default profile_setup_done to True if user already has a resume
+if "profile_setup_done" not in st.session_state:
+    st.session_state["profile_setup_done"] = bool(current_user.get("resume_json"))
+needs_setup = not st.session_state["profile_setup_done"]
 
 # --- Header ---
 header_left, header_right = st.columns([3, 1])
