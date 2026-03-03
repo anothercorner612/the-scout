@@ -48,7 +48,7 @@ SVG_COMPASS = _svg_img(_SVG_COMPASS, 64)
 
 SUBTITLE_ANIMATED = (
     '<div class="scout-subtitle">'
-    '<span>Your&nbsp;</span>'
+    'Your '
     '<span class="role-spinner"><span class="role-spinner-inner">'
     '<span>dream role</span>'
     '<span>next chapter</span>'
@@ -57,11 +57,13 @@ SUBTITLE_ANIMATED = (
     '<span>big break</span>'
     '<span>next adventure</span>'
     '</span></span>'
-    '<span>&nbsp;job hunter</span>'
+    ' job hunter'
     '</div>'
 )
 
 SUBTITLE_STATIC = '<div class="scout-subtitle-static">Your job hunter</div>'
+
+TILDE_DIVIDER = '<div class="tilde-divider">~ ~ ~</div>'
 
 _SVG_MAP = """<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
   <path d="M12 18 L28 12 L44 18 L60 12 V54 L44 60 L28 54 L12 60 Z" stroke="#C4653A" stroke-width="1.5" fill="none"/>
@@ -133,10 +135,7 @@ st.markdown("""
         color: #9C9488;
         margin-top: 4px;
         margin-bottom: 2rem;
-        display: flex;
-        align-items: baseline;
-        justify-content: center;
-        gap: 0;
+        text-align: center;
         height: 1.2em;
         line-height: 1.2em;
     }
@@ -211,6 +210,11 @@ st.markdown("""
         margin-bottom: 0.3rem;
         border-bottom: 1.5px solid #2D2A26;
         padding-bottom: 0.4rem;
+    }
+    .section-header::before {
+        content: '~ ';
+        color: #C4653A;
+        font-style: italic;
     }
     .section-hint {
         font-family: 'DM Sans', sans-serif;
@@ -328,6 +332,27 @@ st.markdown("""
     hr {
         border: none;
         border-top: 1px solid #E0D9CF;
+    }
+
+    /* Decorative tilde divider */
+    .tilde-divider {
+        text-align: center;
+        color: #E0D9CF;
+        font-family: 'Instrument Serif', serif;
+        font-size: 1.4rem;
+        letter-spacing: 0.5em;
+        padding: 0.8rem 0;
+        user-select: none;
+    }
+
+    /* Greeting */
+    .greeting {
+        font-family: 'Instrument Serif', serif;
+        font-size: 1.1rem;
+        font-style: italic;
+        color: #9C9488;
+        text-align: center;
+        margin-bottom: 1rem;
     }
 
     /* Scout again button */
@@ -1364,6 +1389,18 @@ if needs_setup:
     show_profile_setup(current_user)
     st.stop()
 
+# Greeting
+from datetime import datetime as _dt
+_hour = _dt.now().hour
+_first_name = (current_user.get("name") or "").split()[0] if current_user.get("name") else ""
+if _hour < 12:
+    _greeting = f"Good morning{', ' + _first_name if _first_name else ''}."
+elif _hour < 17:
+    _greeting = f"Good afternoon{', ' + _first_name if _first_name else ''}."
+else:
+    _greeting = f"Good evening{', ' + _first_name if _first_name else ''}."
+st.markdown(f'<div class="greeting">{_greeting}</div>', unsafe_allow_html=True)
+
 # Last run info + Scout button on one row
 last_run = load_last_run()
 _scout_label = "Scout again" if last_run else "Start scouting"
@@ -1552,7 +1589,7 @@ if not scored_df.empty and best_count == 0 and warm_count == 0:
         unsafe_allow_html=True,
     )
 
-st.divider()
+st.markdown(TILDE_DIVIDER, unsafe_allow_html=True)
 
 # --- Best Shots ---
 hot = filtered[filtered["score"] > 70].copy()
@@ -1704,7 +1741,7 @@ if not hot.empty:
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
-st.divider()
+st.markdown(TILDE_DIVIDER, unsafe_allow_html=True)
 
 # --- Worth a Look ---
 warm = filtered[(filtered["score"] >= 50) & (filtered["score"] <= 70)].copy()
@@ -1732,7 +1769,7 @@ if not warm.empty:
             unsafe_allow_html=True,
         )
 
-st.divider()
+st.markdown(TILDE_DIVIDER, unsafe_allow_html=True)
 
 # --- Everything Else ---
 st.markdown(
