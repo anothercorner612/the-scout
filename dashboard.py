@@ -153,7 +153,7 @@ st.markdown("""
         display: inline-block;
         height: 1.2em;
         overflow: hidden;
-        vertical-align: baseline;
+        vertical-align: top;
     }
     .role-spinner-inner {
         display: flex;
