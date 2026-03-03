@@ -15,6 +15,51 @@ DB_PATH = Path(__file__).parent / "job_tracker.db"
 PROJECT_DIR = Path(__file__).parent
 STATUSES = ["Unexplored", "Researched", "Applied", "Followed-Up"]
 
+# --- Inline SVG illustrations (terracotta #C4653A + warm tones) ---
+SVG_BINOCULARS = """<svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="26" cy="48" r="16" stroke="#C4653A" stroke-width="2" fill="none"/>
+  <circle cx="54" cy="48" r="16" stroke="#C4653A" stroke-width="2" fill="none"/>
+  <path d="M34 20 L26 32" stroke="#C4653A" stroke-width="2" stroke-linecap="round"/>
+  <path d="M46 20 L54 32" stroke="#C4653A" stroke-width="2" stroke-linecap="round"/>
+  <path d="M34 20 H46" stroke="#C4653A" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="26" cy="48" r="6" stroke="#E0D9CF" stroke-width="1.5" fill="none"/>
+  <circle cx="54" cy="48" r="6" stroke="#E0D9CF" stroke-width="1.5" fill="none"/>
+</svg>"""
+
+SVG_COMPASS = """<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="32" cy="32" r="28" stroke="#C4653A" stroke-width="1.5" fill="none"/>
+  <circle cx="32" cy="32" r="24" stroke="#E0D9CF" stroke-width="1" fill="none"/>
+  <polygon points="32,12 35,30 32,34 29,30" fill="#C4653A" opacity="0.9"/>
+  <polygon points="32,52 29,34 32,30 35,34" fill="#E0D9CF"/>
+  <circle cx="32" cy="32" r="2.5" fill="#C4653A"/>
+  <text x="32" y="9" text-anchor="middle" font-family="DM Sans" font-size="6" fill="#9C9488" font-weight="500">N</text>
+</svg>"""
+
+SUBTITLE_ANIMATED = (
+    '<div class="scout-subtitle">'
+    'Your <span class="role-spinner"><span class="role-spinner-inner">'
+    '<span>dream role</span>'
+    '<span>next chapter</span>'
+    '<span>career move</span>'
+    '<span>perfect fit</span>'
+    '<span>big break</span>'
+    '<span>next adventure</span>'
+    '</span></span> job hunter'
+    '</div>'
+)
+
+SUBTITLE_STATIC = '<div class="scout-subtitle-static">Your job hunter</div>'
+
+SVG_MAP = """<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M12 18 L28 12 L44 18 L60 12 V54 L44 60 L28 54 L12 60 Z" stroke="#C4653A" stroke-width="1.5" fill="none"/>
+  <line x1="28" y1="12" x2="28" y2="54" stroke="#E0D9CF" stroke-width="1"/>
+  <line x1="44" y1="18" x2="44" y2="60" stroke="#E0D9CF" stroke-width="1"/>
+  <circle cx="36" cy="32" r="4" stroke="#C4653A" stroke-width="1.5" fill="none"/>
+  <circle cx="36" cy="32" r="1.5" fill="#C4653A"/>
+  <path d="M20 28 Q24 24 28 28" stroke="#9C9488" stroke-width="0.8" fill="none"/>
+  <path d="M44 40 Q50 36 56 40" stroke="#9C9488" stroke-width="0.8" fill="none"/>
+</svg>"""
+
 # --- Gemini client ---
 # Support Streamlit Cloud secrets or .env
 _gemini_key = os.getenv("gemini_key")
@@ -73,6 +118,47 @@ st.markdown("""
         color: #9C9488;
         margin-top: 4px;
         margin-bottom: 2rem;
+        height: 1.4em;
+        overflow: hidden;
+        position: relative;
+    }
+    .scout-subtitle-static {
+        font-family: 'DM Sans', sans-serif;
+        font-size: 0.85rem;
+        font-weight: 300;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #9C9488;
+        margin-top: 4px;
+        margin-bottom: 2rem;
+    }
+    .role-spinner {
+        display: inline-block;
+        position: relative;
+        height: 1.4em;
+        overflow: hidden;
+        vertical-align: bottom;
+    }
+    .role-spinner-inner {
+        display: flex;
+        flex-direction: column;
+        animation: role-spin 10s ease-in-out infinite;
+    }
+    .role-spinner-inner span {
+        display: block;
+        height: 1.4em;
+        line-height: 1.4em;
+        color: #C4653A;
+        font-weight: 400;
+    }
+    @keyframes role-spin {
+        0%, 12%   { transform: translateY(0); }
+        16%, 28%  { transform: translateY(-1.4em); }
+        32%, 44%  { transform: translateY(-2.8em); }
+        48%, 60%  { transform: translateY(-4.2em); }
+        64%, 76%  { transform: translateY(-5.6em); }
+        80%, 92%  { transform: translateY(-7.0em); }
+        96%, 100% { transform: translateY(0); }
     }
 
     /* Metric cards */
@@ -291,6 +377,40 @@ st.markdown("""
         font-weight: 400;
         color: #2D2A26;
         margin-bottom: 0.3rem;
+    }
+
+    /* Empty state */
+    .empty-state {
+        text-align: center;
+        padding: 4rem 2rem 3rem;
+    }
+    .empty-state svg {
+        margin-bottom: 1.5rem;
+        opacity: 0.85;
+    }
+    .empty-state-heading {
+        font-family: 'Instrument Serif', serif;
+        font-size: 1.6rem;
+        color: #2D2A26;
+        margin-bottom: 0.5rem;
+    }
+    .empty-state-body {
+        font-family: 'DM Sans', sans-serif;
+        font-size: 0.88rem;
+        color: #9C9488;
+        font-weight: 300;
+        max-width: 420px;
+        margin: 0 auto 1.5rem;
+        line-height: 1.5;
+    }
+
+    /* Setup header illustration */
+    .setup-illustration {
+        text-align: center;
+        margin-bottom: 0.5rem;
+    }
+    .setup-illustration svg {
+        opacity: 0.8;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -642,7 +762,7 @@ RESUME:
 {resume_str}
 
 GOALS:
-{goals_text or "General PM/TPM roles, US remote"}
+{goals_text or "Not specified — generate a general-purpose scoring prompt based on the resume"}
 
 Generate a prompt similar to this format but personalized to THIS candidate:
 - Define the candidate's strengths in 2-3 sentences
@@ -817,7 +937,7 @@ def generate_materials(job, user=None):
     if culture_flags or glassdoor:
         culture_context = f"\nCOMPANY CULTURE CONTEXT:\nGlassdoor: {glassdoor}\nFlags: {culture_flags}\n"
 
-    # Use user's resume if available, otherwise fall back to Lee's hardcoded
+    # Use user's resume if available
     if user and user.get("resume_json"):
         try:
             resume_data = json.loads(user["resume_json"]) if isinstance(user["resume_json"], str) else user["resume_json"]
@@ -828,10 +948,10 @@ def generate_materials(job, user=None):
         resume_text = _build_resume_text_from_json(resume_data)
         user_name = user.get("name", "the candidate")
     else:
-        resume_summary = "Strategic Leader with 10+ years of experience in SaaS and eCommerce lifecycle management."
-        resume_skills = "SaaS Lifecycle Management, Stakeholder Management, JIRA, AI-collaboration tools, Cross-functional team management"
-        resume_text = ""  # Legacy mode without user
-        user_name = "Lee Frank"
+        resume_summary = ""
+        resume_skills = ""
+        resume_text = ""
+        user_name = user.get("name", "the candidate") if user else "the candidate"
 
     prompt = f"""You are a job application assistant. Given a job description and {user_name}'s resume, produce ALL FOUR outputs below in a single JSON response.
 
@@ -880,10 +1000,10 @@ def answer_application_question(job, question, user=None):
         resume_text = _build_resume_text_from_json(resume_data)
         user_name = user.get("name", "the candidate")
     else:
-        resume_summary = "Strategic Leader with 10+ years of experience in SaaS and eCommerce lifecycle management."
-        resume_skills = "SaaS Lifecycle Management, Stakeholder Management, JIRA, AI-collaboration tools"
+        resume_summary = ""
+        resume_skills = ""
         resume_text = ""
-        user_name = "Lee Frank"
+        user_name = user.get("name", "the candidate") if user else "the candidate"
 
     prompt = f"""You are helping {user_name} answer an application question for the "{job['title']}" role at {job['company']}.
 
@@ -968,10 +1088,7 @@ def find_network_matches(jobs_df, contacts_df):
 def show_onboarding():
     """Show login/register page. Returns user dict if logged in, None otherwise."""
     st.markdown('<div class="scout-title">The <em>Scout</em></div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="scout-subtitle">Your creative-tech job hunter</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(SUBTITLE_ANIMATED, unsafe_allow_html=True)
     st.markdown("---")
 
     tab_login, tab_register, tab_reset = st.tabs(["Log in", "Create account", "Reset password"])
@@ -1033,78 +1150,164 @@ def show_onboarding():
 
 
 def show_profile_setup(user):
-    """Show resume upload and goals setup for new users."""
-    st.markdown('<div class="onboard-title">Set up your profile</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-hint">Upload your resume and tell The Scout what you\'re looking for.</div>',
-        unsafe_allow_html=True,
-    )
+    """Show resume upload and goals setup — works for new and returning users."""
+    is_editing = bool(user.get("resume_json") or user.get("goals_text"))
 
-    # Resume upload
-    st.markdown("**Resume (PDF)**")
-    uploaded_pdf = st.file_uploader("Upload your resume", type=["pdf"], label_visibility="collapsed")
+    # Sidebar with account controls during setup
+    with st.sidebar:
+        display_name = user.get("name") or user["username"]
+        st.markdown(
+            f'<div style="font-family: Instrument Serif, serif; font-size: 1.2rem; '
+            f'margin-bottom: 0.25rem;">{display_name}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Log out", key="setup_logout_btn"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
 
+    if is_editing:
+        st.markdown(f'<div class="setup-illustration">{SVG_COMPASS}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="onboard-title">Edit your profile</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-hint">Update your resume or search criteria. Changes take effect on your next Scout run.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(f'<div class="setup-illustration">{SVG_MAP}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="onboard-title">Set up your profile</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-hint">Two steps to get started: upload your resume, then describe what you\'re looking for. The Scout uses both to find and score jobs tailored to you.</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Track completion of each step
     existing_resume = None
     if user.get("resume_json"):
         try:
             existing_resume = json.loads(user["resume_json"]) if isinstance(user["resume_json"], str) else user["resume_json"]
         except Exception:
             pass
+    has_resume = existing_resume is not None or "parsed_resume" in st.session_state
+    has_goals = bool(user.get("goals_text"))
+
+    # ── Step 1: Resume ──
+    step1_status = " ~" if has_resume else ""
+    st.markdown(f"### Step 1: Resume{step1_status}")
+    if not has_resume:
+        st.markdown(
+            '<div class="section-hint">Upload a PDF of your resume. The Scout will extract your experience, skills, and accomplishments to personalize job scoring and application materials.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="section-hint">Your resume is on file. Upload a new one below to replace it.</div>',
+            unsafe_allow_html=True,
+        )
+
+    uploaded_pdf = st.file_uploader("Upload your resume (PDF)", type=["pdf"], label_visibility="collapsed")
 
     if uploaded_pdf is not None:
-        if st.button("Parse resume with AI"):
+        if st.button("Parse resume with AI", type="primary"):
             with st.spinner("Reading your resume..."):
                 parsed = parse_resume_pdf(uploaded_pdf.read())
             if parsed and parsed.get("bullets"):
                 st.session_state["parsed_resume"] = parsed
-                st.success("Resume parsed successfully")
+                st.success("Resume parsed — review the extracted data below, then save.")
             else:
                 st.error("Could not parse resume. Try uploading a different format.")
 
     if "parsed_resume" in st.session_state:
         parsed = st.session_state["parsed_resume"]
-        st.markdown("**Extracted resume data** (review and edit below)")
+        st.markdown("**Extracted resume data** — review before saving:")
         st.json(parsed)
-
-        if st.button("Save resume"):
+        if st.button("Save resume", type="primary"):
             update_user_field(user["id"], "resume_json", json.dumps(parsed))
-            st.success("Resume saved")
             del st.session_state["parsed_resume"]
+            st.success("Resume saved.")
             st.rerun()
     elif existing_resume:
-        st.markdown("**Current resume on file**")
-        st.json(existing_resume)
+        with st.expander("View current resume on file"):
+            st.json(existing_resume)
 
     st.markdown("---")
 
-    # Goals
-    st.markdown("**What are you looking for?**")
+    # ── Step 2: Search criteria ──
+    step2_status = " ~" if has_goals else ""
+    st.markdown(f"### Step 2: Search criteria{step2_status}")
+    st.markdown(
+        '<div class="section-hint">Tell The Scout what you\'re looking for. The more specific you are, the better it scores jobs for you. Include:</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("""
+- **Target roles** — exact titles you'd apply for (e.g. "Senior PM", "Customer Success Manager", "Solutions Engineer")
+- **Industries / company types** — SaaS, fintech, healthcare, agencies, etc.
+- **Location requirements** — remote only, hybrid OK, specific cities or time zones
+- **Bonus skills or keywords** — things that make a role extra appealing to you
+- **Hard deal-breakers** — things you want The Scout to automatically skip
+""")
+
     current_goals = user.get("goals_text") or ""
     goals = st.text_area(
-        "Describe your ideal roles, industries, deal-breakers, etc.",
+        "What are you looking for?",
         value=current_goals,
-        height=150,
+        height=200,
         label_visibility="collapsed",
-        placeholder="e.g. Remote PM/TPM roles at mid-market SaaS companies. Interested in design tools, creative tech, developer tools. No agencies. No roles requiring security clearance.",
+        placeholder="Example:\n\nUS Remote only. Looking for Customer Success Manager or Account Manager roles at B2B SaaS companies (50-500 employees).\n\nIdeal: roles with a book of business, strategic accounts, and cross-functional work with Product.\n\nAlso interested in: Solutions Consultant, Client Partner, Onboarding Lead.\n\nBonus: experience with enterprise clients, Salesforce, data-driven QBRs.\n\nSkip: on-site roles, agencies, entry-level, roles requiring travel >20%.",
     )
 
-    if st.button("Save goals & generate scoring prompt"):
-        update_user_field(user["id"], "goals_text", goals)
-        # Generate scoring prompt from resume + goals
-        resume_data = existing_resume or (st.session_state.get("parsed_resume"))
-        if resume_data:
-            with st.spinner("Generating your personalized scoring criteria..."):
-                prompt = generate_scoring_prompt(resume_data, goals)
-                update_user_field(user["id"], "scoring_prompt", prompt)
-            st.success("Scoring prompt generated and saved")
+    # Determine what changed
+    goals_changed = goals.strip() != current_goals.strip()
+
+    # Refresh resume reference in case it was just saved
+    if not existing_resume and user.get("resume_json"):
+        try:
+            existing_resume = json.loads(user["resume_json"]) if isinstance(user["resume_json"], str) else user["resume_json"]
+        except Exception:
+            pass
+    resume_data = existing_resume or st.session_state.get("parsed_resume")
+
+    if st.button("Save search criteria", type="primary"):
+        if not goals.strip():
+            st.warning("Write something about what you're looking for first.")
         else:
-            st.warning("Upload a resume first so we can generate personalized scoring criteria")
-        st.rerun()
+            update_user_field(user["id"], "goals_text", goals)
+            if resume_data:
+                with st.spinner("Generating your personalized scoring criteria..."):
+                    prompt = generate_scoring_prompt(resume_data, goals)
+                    update_user_field(user["id"], "scoring_prompt", prompt)
+                st.success("Search criteria and scoring prompt saved.")
+            else:
+                st.success("Search criteria saved. Upload a resume to unlock personalized scoring.")
+            st.rerun()
 
     st.markdown("---")
-    if st.button("Continue to dashboard"):
-        st.session_state["profile_setup_done"] = True
-        st.rerun()
+
+    # ── Continue / Back to dashboard ──
+    # Refresh completion state after potential saves above
+    has_resume_now = bool(user.get("resume_json")) or "parsed_resume" in st.session_state
+    has_goals_now = bool(user.get("goals_text"))
+
+    if is_editing:
+        if st.button("Back to dashboard", type="primary"):
+            st.session_state["profile_setup_done"] = True
+            st.rerun()
+    elif has_resume_now and has_goals_now:
+        st.success("You're all set! Click below to start discovering roles.")
+        if st.button("Go to dashboard", type="primary"):
+            st.session_state["profile_setup_done"] = True
+            st.rerun()
+    elif has_resume_now or has_goals_now:
+        remaining = "search criteria" if not has_goals_now else "resume"
+        st.info(f"Almost there — add your {remaining} above to get the best results.")
+        if st.button("Skip for now — go to dashboard"):
+            st.session_state["profile_setup_done"] = True
+            st.rerun()
+    else:
+        st.info("Complete the steps above to get started.")
+        if st.button("Skip for now — go to dashboard"):
+            st.session_state["profile_setup_done"] = True
+            st.rerun()
 
 
 # ============================================================
@@ -1132,26 +1335,10 @@ needs_setup = not st.session_state["profile_setup_done"]
 header_left, header_right = st.columns([3, 1])
 with header_left:
     st.markdown('<div class="scout-title">The <em>Scout</em></div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="scout-subtitle">Your creative-tech job hunter</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(SUBTITLE_ANIMATED, unsafe_allow_html=True)
 with header_right:
     st.markdown("<div style='height: 2.5rem'></div>", unsafe_allow_html=True)
     scout_col = st.container()
-
-# User info bar + logout
-user_col1, user_col2 = st.columns([4, 1])
-with user_col1:
-    st.markdown(
-        f'<div class="section-hint">Logged in as <strong>{current_user.get("name") or current_user["username"]}</strong></div>',
-        unsafe_allow_html=True,
-    )
-with user_col2:
-    if st.button("Log out", key="logout_btn"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
 
 # Show profile setup if needed
 if needs_setup:
@@ -1171,10 +1358,11 @@ if last_run:
         unsafe_allow_html=True,
     )
 
-# --- Scout Again Button ---
+# --- Scout Button ---
+_scout_label = "Scout again" if last_run else "Start scouting"
 with scout_col:
     st.markdown('<div class="scout-btn">', unsafe_allow_html=True)
-    if st.button("Scout again"):
+    if st.button(_scout_label):
         st.markdown('</div>', unsafe_allow_html=True)
         with st.status("Scouting for new roles...", expanded=True) as status:
             progress = st.empty()
@@ -1226,6 +1414,26 @@ df = load_jobs_for_user(user_id)
 
 # --- Sidebar ---
 with st.sidebar:
+    # Account section at top
+    display_name = current_user.get("name") or current_user["username"]
+    st.markdown(
+        f'<div style="font-family: Instrument Serif, serif; font-size: 1.2rem; '
+        f'margin-bottom: 0.25rem;">{display_name}</div>',
+        unsafe_allow_html=True,
+    )
+    acct_col1, acct_col2 = st.columns(2)
+    with acct_col1:
+        if st.button("Edit profile", key="edit_profile_btn", use_container_width=True):
+            st.session_state["profile_setup_done"] = False
+            st.rerun()
+    with acct_col2:
+        if st.button("Log out", key="logout_btn", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
+    st.divider()
+
     # Filters only make sense when there are jobs
     if not df.empty:
         st.markdown(
@@ -1256,17 +1464,7 @@ with st.sidebar:
 
         st.divider()
 
-    # Profile management — always visible
-    st.markdown(
-        '<div style="font-family: Instrument Serif, serif; font-size: 1.2rem; '
-        'margin-bottom: 0.5rem;">Your profile</div>',
-        unsafe_allow_html=True,
-    )
-    if st.button("Edit profile / resume", key="edit_profile_btn"):
-        st.session_state["profile_setup_done"] = False
-        st.rerun()
-
-    st.divider()
+    # LinkedIn network
     st.markdown(
         '<div style="font-family: Instrument Serif, serif; font-size: 1.2rem; '
         'margin-bottom: 0.5rem;">LinkedIn network</div>',
@@ -1287,9 +1485,14 @@ with st.sidebar:
 
 if df.empty:
     st.markdown(
-        '<div class="section-hint" style="margin-top:3rem; font-size:1rem;">'
-        "Nothing here yet. Click <strong>Scout again</strong> to start discovering roles."
-        "</div>",
+        f'<div class="empty-state">'
+        f'{SVG_BINOCULARS}'
+        f'<div class="empty-state-heading">No roles scouted yet</div>'
+        f'<div class="empty-state-body">'
+        f'Hit <strong>Start scouting</strong> above to search across job boards. '
+        f'The Scout will find, score, and research roles tailored to your profile.'
+        f'</div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
     st.stop()
@@ -1311,14 +1514,25 @@ network_matches = find_network_matches(df, contacts_df) if not contacts_df.empty
 
 # --- Metrics ---
 scored_df = df[df["score"].notna()]
-if not scored_df.empty:
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Scouted", len(df))
-    col2.metric("Best shots", len(scored_df[scored_df["score"] > 70]))
-    col3.metric("Worth a look", len(scored_df[(scored_df["score"] >= 50) & (scored_df["score"] <= 70)]))
-    col4.metric("Applied", len(df[df["status"] == "Applied"]))
+best_count = len(scored_df[scored_df["score"] > 70]) if not scored_df.empty else 0
+warm_count = len(scored_df[(scored_df["score"] >= 50) & (scored_df["score"] <= 70)]) if not scored_df.empty else 0
+applied_count = len(df[df["status"] == "Applied"])
 
-    st.divider()
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Scouted", len(df))
+col2.metric("Best shots", best_count)
+col3.metric("Worth a look", warm_count)
+col4.metric("Applied", applied_count)
+
+if not scored_df.empty and best_count == 0 and warm_count == 0:
+    st.markdown(
+        '<div class="section-hint" style="margin-top:0.5rem;">'
+        'Roles have been found but none scored above 50 yet. Try refining your search criteria or running Scout again.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+st.divider()
 
 # --- Best Shots ---
 hot = filtered[filtered["score"] > 70].copy()

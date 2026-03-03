@@ -93,24 +93,23 @@ SEED_COMPANIES = [
     "greenhouse", "lever", "ashby",
 ]
 
-# Default scoring system (used when no per-user prompt exists)
+# Default scoring system (used when no per-user prompt exists — generic fallback)
 DEFAULT_SCORING_SYSTEM = """You are a job-fit scoring engine. Score each job 0-100.
 
-CANDIDATE: 10+ yr PM bridging Engineering↔Design↔Executive teams. Strongest at: managing cross-functional technical+creative teams, large-scale migrations/rebrands, stakeholder governance. Recent: Program Manager at ResMed (global rebrand, 15+ regions), Senior PM at Think Company (50+ site migration). Tools: JIRA, Linear, Notion, Figma, GitHub, Sanity.io, SFCC. Has personal/side-project AI experience (LLM workflows, automation) — NOT a dedicated AI specialist.
+CANDIDATE: Experienced professional seeking their next role. No specific profile provided — score based on general job quality signals.
 
-TIER 1 (base 80-95): Design/Creative Operations PM, Design Systems PM, Technical PM managing creative+eng teams, Product Operations. Cross-functional Eng↔Design dependencies. Brand↔technical execution.
-TIER 2 (base 65-80): TPM, DevEx PM, Product Ops, Program Manager at SaaS companies. SDLC optimization, API integrations.
-BONUS KEYWORDS (+5 each, cap 95): CI/CD for Design, Token-to-Code, Git workflows, capacity planning, OKR tracking, site migration, replatforming.
+TIER 1 (base 80-95): Roles with clear growth potential, competitive compensation signals, and strong company reputation.
+TIER 2 (base 65-80): Solid roles at established companies with reasonable scope and responsibilities.
 
 REALISM MODIFIERS — APPLY THESE AFTER BASE SCORE:
-- Title says Director, VP, Head of, Staff, Principal → subtract 20 (candidate is Senior/Lead level, not exec)
-- Role requires 5+ years dedicated AI/ML research or PhD → subtract 25 (candidate has PM-level AI, not research)
-- Company is FAANG/Big Tech (Google, Meta, Apple, Amazon, Microsoft, Netflix) → subtract 15 (ultra-competitive, low ROI)
-- Role says "Senior" PM/TPM at mid-market company → no penalty (good fit)
-- Role says "Manager" or "Lead" (IC not people-manager) → no penalty
-- Company has <5000 employees and role matches skills → add 5 (sweet spot)
+- Role has clear, specific responsibilities and requirements → no penalty
+- Vague or generic job posting with buzzwords but no substance → subtract 10
+- Company has <5000 employees → add 5 (more impact potential)
+- Company is FAANG/Big Tech → no modifier (neutral without candidate context)
 
-HARD REJECT (score=0): Non-remote, non-tech industry, Junior/Coordinator/Associate/Intern title, requires active security clearance.
+HARD REJECT (score=0): Obvious spam, scam postings, or roles with major red flags.
+
+NOTE: This is a generic scoring fallback. For personalized scoring, users should upload their resume and set search criteria in The Scout dashboard.
 
 Return ONLY a JSON array with one object per job:
 [{"id":<job_id>,"score":<0-100>,"tier":"tier1"|"tier2"|"no_match","reasoning":"<1 sentence>"}]"""
@@ -380,7 +379,7 @@ async def _scan_all_ats(slugs: list, on_progress=None) -> list:
 def discover(conn, on_progress=None) -> dict:
     """Phase 1: Discover jobs from ATS APIs + Gemini grounded search."""
     if on_progress:
-        on_progress("Asking Gemini for companies hiring remote PM/TPM roles...")
+        on_progress("Asking Gemini for companies with open roles...")
 
     ai_companies = []
     try:
@@ -406,7 +405,7 @@ Search THESE SPECIFIC SOURCES for company names:
 - site:jobs.lever.co project manager OR program manager remote
 - site:wellfound.com/company project manager OR program manager remote
 
-I need company names only (not job URLs). Focus on mid-market SaaS, design tools, creative-tech, developer tools, eCommerce platforms, digital agencies, and tech consultancies.
+I need company names only (not job URLs). Focus on mid-market companies across SaaS, tech, digital agencies, eCommerce, and consultancies.
 Prefer companies with 50-5000 employees over FAANG/Big Tech.
 IMPORTANT: Include digital agencies and consultancies that hire Project Managers.
 Return a JSON array of lowercase company name slugs:
@@ -611,15 +610,13 @@ Return ONLY valid JSON:
 # PHASE 4 — DRAFT VIBE CHECK EMAILS
 # ============================================================
 
-# Default email prompt template (uses Lee's experience — overridden for multi-user)
-DEFAULT_EMAIL_BULLETS = """- Led a global rebrand across 15+ regions at ResMed — coordinated Eng, Design, and regional stakeholders to ship a unified system on time
-- Ran a 50+ site migration for a global pharmaceutical company — zero downtime, full executive alignment through high-risk phases
-- Built AI/LLM-driven workflows and a headless eCommerce platform with Sanity.io — not just managed it, actually architected it
-- Scaled offshore/onshore dev cycles across 3 time zones, increased sprint velocity 25% through better QA/Dev handoffs
-- Co-owns a design shop — understands the craft side, not just the process side"""
+# Default email prompt template (used when no user resume is available)
+DEFAULT_EMAIL_BULLETS = """- Experienced professional with a track record of delivering cross-functional projects
+- Strong stakeholder management and communication skills
+- Comfortable working across distributed teams and time zones"""
 
 
-def draft_emails(conn, user_name="Lee Frank", user_bullets=None, on_progress=None) -> int:
+def draft_emails(conn, user_name="the candidate", user_bullets=None, on_progress=None) -> int:
     """Phase 4: Draft vibe check emails for enriched high-score jobs."""
     bullets = user_bullets or DEFAULT_EMAIL_BULLETS
 
@@ -686,7 +683,7 @@ Return ONLY the email body, nothing else.
 # ORCHESTRATOR
 # ============================================================
 
-def run_pipeline(conn, scoring_system=None, user_name="Lee Frank", user_bullets=None, on_progress=None) -> dict:
+def run_pipeline(conn, scoring_system=None, user_name="the candidate", user_bullets=None, on_progress=None) -> dict:
     """Run all 4 pipeline phases. Returns summary dict."""
     # Insert run log
     conn.execute("INSERT INTO run_log DEFAULT VALUES")
