@@ -15,8 +15,16 @@ DB_PATH = Path(__file__).parent / "job_tracker.db"
 PROJECT_DIR = Path(__file__).parent
 STATUSES = ["Unexplored", "Researched", "Applied", "Followed-Up"]
 
-# --- Inline SVG illustrations (terracotta #C4653A + warm tones) ---
-SVG_BINOCULARS = """<svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+# --- Inline SVG illustrations as base64 img tags (Streamlit strips raw SVGs) ---
+import base64 as _b64
+
+def _svg_img(svg: str, width: int = None) -> str:
+    """Convert SVG string to an <img> tag with base64 data URI."""
+    encoded = _b64.b64encode(svg.encode()).decode()
+    w = f' width="{width}"' if width else ''
+    return f'<img src="data:image/svg+xml;base64,{encoded}"{w} alt="">'
+
+_SVG_BINOCULARS = """<svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
   <circle cx="26" cy="48" r="16" stroke="#C4653A" stroke-width="2" fill="none"/>
   <circle cx="54" cy="48" r="16" stroke="#C4653A" stroke-width="2" fill="none"/>
   <path d="M34 20 L26 32" stroke="#C4653A" stroke-width="2" stroke-linecap="round"/>
@@ -26,7 +34,7 @@ SVG_BINOCULARS = """<svg width="80" height="80" viewBox="0 0 80 80" fill="none" 
   <circle cx="54" cy="48" r="6" stroke="#E0D9CF" stroke-width="1.5" fill="none"/>
 </svg>"""
 
-SVG_COMPASS = """<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+_SVG_COMPASS = """<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
   <circle cx="32" cy="32" r="28" stroke="#C4653A" stroke-width="1.5" fill="none"/>
   <circle cx="32" cy="32" r="24" stroke="#E0D9CF" stroke-width="1" fill="none"/>
   <polygon points="32,12 35,30 32,34 29,30" fill="#C4653A" opacity="0.9"/>
@@ -35,22 +43,27 @@ SVG_COMPASS = """<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xml
   <text x="32" y="9" text-anchor="middle" font-family="DM Sans" font-size="6" fill="#9C9488" font-weight="500">N</text>
 </svg>"""
 
+SVG_BINOCULARS = _svg_img(_SVG_BINOCULARS, 80)
+SVG_COMPASS = _svg_img(_SVG_COMPASS, 64)
+
 SUBTITLE_ANIMATED = (
     '<div class="scout-subtitle">'
-    'Your <span class="role-spinner"><span class="role-spinner-inner">'
+    '<span>Your&nbsp;</span>'
+    '<span class="role-spinner"><span class="role-spinner-inner">'
     '<span>dream role</span>'
     '<span>next chapter</span>'
     '<span>career move</span>'
     '<span>perfect fit</span>'
     '<span>big break</span>'
     '<span>next adventure</span>'
-    '</span></span> job hunter'
+    '</span></span>'
+    '<span>&nbsp;job hunter</span>'
     '</div>'
 )
 
 SUBTITLE_STATIC = '<div class="scout-subtitle-static">Your job hunter</div>'
 
-SVG_MAP = """<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+_SVG_MAP = """<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg">
   <path d="M12 18 L28 12 L44 18 L60 12 V54 L44 60 L28 54 L12 60 Z" stroke="#C4653A" stroke-width="1.5" fill="none"/>
   <line x1="28" y1="12" x2="28" y2="54" stroke="#E0D9CF" stroke-width="1"/>
   <line x1="44" y1="18" x2="44" y2="60" stroke="#E0D9CF" stroke-width="1"/>
@@ -59,6 +72,7 @@ SVG_MAP = """<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="
   <path d="M20 28 Q24 24 28 28" stroke="#9C9488" stroke-width="0.8" fill="none"/>
   <path d="M44 40 Q50 36 56 40" stroke="#9C9488" stroke-width="0.8" fill="none"/>
 </svg>"""
+SVG_MAP = _svg_img(_SVG_MAP, 72)
 
 # --- Gemini client ---
 # Support Streamlit Cloud secrets or .env
@@ -118,9 +132,11 @@ st.markdown("""
         color: #9C9488;
         margin-top: 4px;
         margin-bottom: 2rem;
-        height: 1.4em;
-        overflow: hidden;
-        position: relative;
+        display: flex;
+        align-items: baseline;
+        gap: 0;
+        height: 1.2em;
+        line-height: 1.2em;
     }
     .scout-subtitle-static {
         font-family: 'DM Sans', sans-serif;
@@ -134,10 +150,9 @@ st.markdown("""
     }
     .role-spinner {
         display: inline-block;
-        position: relative;
-        height: 1.4em;
+        height: 1.2em;
         overflow: hidden;
-        vertical-align: bottom;
+        vertical-align: baseline;
     }
     .role-spinner-inner {
         display: flex;
@@ -146,18 +161,19 @@ st.markdown("""
     }
     .role-spinner-inner span {
         display: block;
-        height: 1.4em;
-        line-height: 1.4em;
+        height: 1.2em;
+        line-height: 1.2em;
         color: #C4653A;
         font-weight: 400;
+        white-space: nowrap;
     }
     @keyframes role-spin {
         0%, 12%   { transform: translateY(0); }
-        16%, 28%  { transform: translateY(-1.4em); }
-        32%, 44%  { transform: translateY(-2.8em); }
-        48%, 60%  { transform: translateY(-4.2em); }
-        64%, 76%  { transform: translateY(-5.6em); }
-        80%, 92%  { transform: translateY(-7.0em); }
+        16%, 28%  { transform: translateY(-1.2em); }
+        32%, 44%  { transform: translateY(-2.4em); }
+        48%, 60%  { transform: translateY(-3.6em); }
+        64%, 76%  { transform: translateY(-4.8em); }
+        80%, 92%  { transform: translateY(-6.0em); }
         96%, 100% { transform: translateY(0); }
     }
 
