@@ -537,6 +537,26 @@ def _check_password(password: str, password_hash: str) -> bool:
         return hashlib.sha256(password.encode()).hexdigest() == password_hash
 
 
+def reset_password(username: str, email: str, new_password: str) -> bool:
+    """Reset password if username + email match."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id, email FROM users WHERE username = ?",
+        (username.lower().strip(),),
+    ).fetchone()
+    if not row:
+        return False
+    stored_email = row[1] or ""
+    if stored_email.lower().strip() != email.lower().strip():
+        return False
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (_hash_password(new_password), row[0]),
+    )
+    conn.commit()
+    return True
+
+
 def register_user(username: str, password: str, name: str, email: str) -> bool:
     conn = get_connection()
     try:
@@ -954,7 +974,7 @@ def show_onboarding():
     )
     st.markdown("---")
 
-    tab_login, tab_register = st.tabs(["Log in", "Create account"])
+    tab_login, tab_register, tab_reset = st.tabs(["Log in", "Create account", "Reset password"])
 
     with tab_login:
         with st.form("login_form"):
@@ -991,6 +1011,25 @@ def show_onboarding():
                         st.rerun()
                     else:
                         st.error("Username already taken")
+
+    with tab_reset:
+        with st.form("reset_form"):
+            reset_username = st.text_input("Username")
+            reset_email = st.text_input("Email on file")
+            reset_pw = st.text_input("New password", type="password")
+            reset_pw2 = st.text_input("Confirm new password", type="password")
+            submitted = st.form_submit_button("Reset password")
+            if submitted:
+                if not reset_username or not reset_email or not reset_pw:
+                    st.error("All fields are required")
+                elif reset_pw != reset_pw2:
+                    st.error("Passwords don't match")
+                elif len(reset_pw) < 6:
+                    st.error("Password must be at least 6 characters")
+                elif reset_password(reset_username, reset_email, reset_pw):
+                    st.success("Password reset. You can now log in.")
+                else:
+                    st.error("Username and email don't match any account")
 
 
 def show_profile_setup(user):
