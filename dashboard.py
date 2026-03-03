@@ -1224,46 +1224,39 @@ with scout_col:
 user_id = current_user["id"]
 df = load_jobs_for_user(user_id)
 
-if df.empty:
-    st.markdown(
-        '<div class="section-hint" style="margin-top:3rem; font-size:1rem;">'
-        "Nothing here yet. Click <strong>Scout again</strong> to start discovering roles."
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    st.stop()
-
-# --- Sidebar Filters ---
+# --- Sidebar ---
 with st.sidebar:
-    st.markdown(
-        '<div style="font-family: Instrument Serif, serif; font-size: 1.4rem; '
-        'margin-bottom: 1rem;">Narrow it down</div>',
-        unsafe_allow_html=True,
-    )
+    # Filters only make sense when there are jobs
+    if not df.empty:
+        st.markdown(
+            '<div style="font-family: Instrument Serif, serif; font-size: 1.4rem; '
+            'margin-bottom: 1rem;">Narrow it down</div>',
+            unsafe_allow_html=True,
+        )
 
-    score_range = st.slider("Score range", 0, 100, (0, 100))
+        score_range = st.slider("Score range", 0, 100, (0, 100))
 
-    platforms = st.multiselect(
-        "Platform",
-        options=df["platform"].dropna().unique().tolist(),
-        default=df["platform"].dropna().unique().tolist(),
-    )
+        platforms = st.multiselect(
+            "Platform",
+            options=df["platform"].dropna().unique().tolist(),
+            default=df["platform"].dropna().unique().tolist(),
+        )
 
-    tiers = st.multiselect(
-        "Tier",
-        options=[t for t in df["tier"].dropna().unique().tolist()],
-        default=[t for t in df["tier"].dropna().unique().tolist()],
-    )
+        tiers = st.multiselect(
+            "Tier",
+            options=[t for t in df["tier"].dropna().unique().tolist()],
+            default=[t for t in df["tier"].dropna().unique().tolist()],
+        )
 
-    statuses_filter = st.multiselect(
-        "Status",
-        options=STATUSES,
-        default=STATUSES,
-    )
+        statuses_filter = st.multiselect(
+            "Status",
+            options=STATUSES,
+            default=STATUSES,
+        )
 
-    st.divider()
+        st.divider()
 
-    # Profile management
+    # Profile management — always visible
     st.markdown(
         '<div style="font-family: Instrument Serif, serif; font-size: 1.2rem; '
         'margin-bottom: 0.5rem;">Your profile</div>',
@@ -1291,6 +1284,15 @@ with st.sidebar:
             st.success(f"Loaded {len(csv_df)} connections")
         except Exception as e:
             st.error(f"CSV import failed: {e}")
+
+if df.empty:
+    st.markdown(
+        '<div class="section-hint" style="margin-top:3rem; font-size:1rem;">'
+        "Nothing here yet. Click <strong>Scout again</strong> to start discovering roles."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 # Load contacts for network matching
 contacts_df = load_contacts(user_id)
