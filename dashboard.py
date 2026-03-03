@@ -118,6 +118,7 @@ st.markdown("""
         color: #2D2A26;
         margin-bottom: 0;
         padding-bottom: 0;
+        text-align: center;
     }
     .scout-title em {
         font-style: italic;
@@ -134,6 +135,7 @@ st.markdown("""
         margin-bottom: 2rem;
         display: flex;
         align-items: baseline;
+        justify-content: center;
         gap: 0;
         height: 1.2em;
         line-height: 1.2em;
@@ -289,9 +291,8 @@ st.markdown("""
         color: #9C9488;
         font-weight: 300;
         letter-spacing: 0.02em;
-        padding: 0.6rem 0;
-        border-bottom: 1px solid #E0D9CF;
-        margin-bottom: 1.5rem;
+        padding: 0.8rem 0;
+        line-height: 2;
     }
 
     /* Sidebar */
@@ -304,11 +305,10 @@ st.markdown("""
         font-weight: 400;
     }
 
-    /* Hide Streamlit branding but keep sidebar toggle */
+    /* Hide Streamlit branding but keep sidebar toggle accessible */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     [data-testid="stStatusWidget"] {display: none;}
-    [data-testid="stToolbar"] {display: none;}
 
     /* Expander styling */
     .streamlit-expanderHeader {
@@ -331,7 +331,13 @@ st.markdown("""
     }
 
     /* Scout again button */
-    .scout-btn > button {
+    .scout-btn {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+    }
+    .scout-btn > div > button,
+    .scout-btn button {
         font-family: 'DM Sans', sans-serif !important;
         font-size: 0.78rem !important;
         font-weight: 500 !important;
@@ -344,11 +350,13 @@ st.markdown("""
         padding: 0.45rem 1.2rem !important;
         transition: all 0.2s !important;
     }
-    .scout-btn > button:hover {
+    .scout-btn > div > button:hover,
+    .scout-btn button:hover {
         background: #C4653A !important;
         color: #F7F3ED !important;
     }
-    .scout-btn > button:active, .scout-btn > button:focus {
+    .scout-btn > div > button:active, .scout-btn > div > button:focus,
+    .scout-btn button:active, .scout-btn button:focus {
         background: #A8522E !important;
         color: #F7F3ED !important;
         border-color: #A8522E !important;
@@ -1348,81 +1356,77 @@ if "profile_setup_done" not in st.session_state:
 needs_setup = not st.session_state["profile_setup_done"]
 
 # --- Header ---
-header_left, header_right = st.columns([3, 1])
-with header_left:
-    st.markdown('<div class="scout-title">The <em>Scout</em></div>', unsafe_allow_html=True)
-    st.markdown(SUBTITLE_ANIMATED, unsafe_allow_html=True)
-with header_right:
-    st.markdown("<div style='height: 2.5rem'></div>", unsafe_allow_html=True)
-    scout_col = st.container()
+st.markdown('<div class="scout-title">The <em>Scout</em></div>', unsafe_allow_html=True)
+st.markdown(SUBTITLE_ANIMATED, unsafe_allow_html=True)
 
 # Show profile setup if needed
 if needs_setup:
     show_profile_setup(current_user)
     st.stop()
 
-# Last run info
+# Last run info + Scout button on one row
 last_run = load_last_run()
-if last_run:
-    st.markdown(
-        f'<div class="run-info">'
-        f'Last scouted {last_run["started_at"]} &nbsp;&middot;&nbsp; '
-        f'{last_run["jobs_found"]} found &nbsp;&middot;&nbsp; '
-        f'{last_run["jobs_scored"]} scored &nbsp;&middot;&nbsp; '
-        f'{last_run["jobs_enriched"]} researched'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-# --- Scout Button ---
 _scout_label = "Scout again" if last_run else "Start scouting"
-with scout_col:
+
+run_col, btn_col = st.columns([3, 1])
+with run_col:
+    if last_run:
+        st.markdown(
+            f'<div class="run-info">'
+            f'Last scouted {last_run["started_at"]} &nbsp;&middot;&nbsp; '
+            f'{last_run["jobs_found"]} found &nbsp;&middot;&nbsp; '
+            f'{last_run["jobs_scored"]} scored &nbsp;&middot;&nbsp; '
+            f'{last_run["jobs_enriched"]} researched'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+with btn_col:
     st.markdown('<div class="scout-btn">', unsafe_allow_html=True)
-    if st.button(_scout_label):
-        st.markdown('</div>', unsafe_allow_html=True)
-        with st.status("Scouting for new roles...", expanded=True) as status:
-            progress = st.empty()
+    scout_clicked = st.button(_scout_label)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+if scout_clicked:
+    with st.status("Scouting for new roles...", expanded=True) as status:
+        progress = st.empty()
+        progress.markdown(
+            '<div class="scout-running">~ discovering roles across job boards...</div>',
+            unsafe_allow_html=True,
+        )
+
+        def _update_progress(msg):
             progress.markdown(
-                '<div class="scout-running">~ discovering roles across job boards...</div>',
+                f'<div class="scout-running">~ {msg}</div>',
                 unsafe_allow_html=True,
             )
 
-            def _update_progress(msg):
-                progress.markdown(
-                    f'<div class="scout-running">~ {msg}</div>',
-                    unsafe_allow_html=True,
-                )
-
-            try:
-                conn = get_connection()
-                # Build user-specific email bullets from resume
-                user_bullets = None
-                if current_user.get("resume_json"):
-                    try:
-                        rd = json.loads(current_user["resume_json"]) if isinstance(current_user["resume_json"], str) else current_user["resume_json"]
-                        bullet_lines = []
-                        for role, blist in rd.get("bullets", {}).items():
-                            for b in blist:
-                                bullet_lines.append(f"- {b}")
-                        if bullet_lines:
-                            user_bullets = "\n".join(bullet_lines)
-                    except Exception:
-                        pass
-                result = run_pipeline(
-                    conn,
-                    scoring_system=current_user.get("scoring_prompt"),
-                    user_name=current_user.get("name") or "the candidate",
-                    user_bullets=user_bullets,
-                    on_progress=_update_progress,
-                )
-                status.update(label="Done scouting", state="complete", expanded=False)
-                st.cache_resource.clear()
-                st.rerun()
-            except Exception as e:
-                status.update(label="Something went wrong", state="error")
-                st.code(str(e)[-500:] if str(e) else "Unknown error")
-    else:
-        st.markdown('</div>', unsafe_allow_html=True)
+        try:
+            conn = get_connection()
+            # Build user-specific email bullets from resume
+            user_bullets = None
+            if current_user.get("resume_json"):
+                try:
+                    rd = json.loads(current_user["resume_json"]) if isinstance(current_user["resume_json"], str) else current_user["resume_json"]
+                    bullet_lines = []
+                    for role, blist in rd.get("bullets", {}).items():
+                        for b in blist:
+                            bullet_lines.append(f"- {b}")
+                    if bullet_lines:
+                        user_bullets = "\n".join(bullet_lines)
+                except Exception:
+                    pass
+            result = run_pipeline(
+                conn,
+                scoring_system=current_user.get("scoring_prompt"),
+                user_name=current_user.get("name") or "the candidate",
+                user_bullets=user_bullets,
+                on_progress=_update_progress,
+            )
+            status.update(label="Done scouting", state="complete", expanded=False)
+            st.cache_resource.clear()
+            st.rerun()
+        except Exception as e:
+            status.update(label="Something went wrong", state="error")
+            st.code(str(e)[-500:] if str(e) else "Unknown error")
 
 # --- Load Data ---
 user_id = current_user["id"]
