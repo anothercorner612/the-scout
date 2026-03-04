@@ -484,11 +484,34 @@ Return 40-60 companies. Return ONLY the JSON array.
 # PHASE 2 — SCORE
 # ============================================================
 
-def score(conn, scoring_system=None, on_progress=None, max_age_days=30) -> dict:
-    """Phase 2: Score unscored jobs. Skips jobs older than max_age_days.
-    Returns dict with scored count and api_calls count."""
+def _upsert_user_job(conn, user_id, job_id, **fields):
+    """Insert or update a user_jobs row. Only sets the provided fields."""
+    # Build SET clause for ON CONFLICT
+    col_names = ["user_id", "job_id"] + list(fields.keys())
+    placeholders = ", ".join(["?"] * len(col_names))
+    on_conflict = ", ".join(f"{k} = excluded.{k}" for k in fields.keys())
+    sql = (
+        f"INSERT INTO user_jobs ({', '.join(col_names)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(user_id, job_id) DO UPDATE SET {on_conflict}"
+    )
+    values = [user_id, job_id] + list(fields.values())
+    conn.execute(sql, values)
+
+
+def score(conn, scoring_system=None, on_progress=None, max_age_days=30, user_id=None) -> dict:
+    """Phase 2: Score unscored jobs. Writes to user_jobs if user_id provided, else shared jobs table.
+    Skips jobs older than max_age_days. Returns dict with scored count and api_calls count."""
     system_prompt = scoring_system or DEFAULT_SCORING_SYSTEM
-    rows = conn.execute("SELECT * FROM jobs WHERE score IS NULL").fetchall()
+
+    # Find jobs this user hasn't scored yet
+    if user_id:
+        rows = conn.execute(
+            "SELECT j.* FROM jobs j WHERE j.id NOT IN "
+            "(SELECT job_id FROM user_jobs WHERE user_id = ? AND score IS NOT NULL)",
+            (user_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM jobs WHERE score IS NULL").fetchall()
     cols = [d[0] for d in conn.execute("SELECT * FROM jobs WHERE 1=0").description]
     unscored_all = [dict(zip(cols, r)) for r in rows]
 
@@ -505,11 +528,16 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30) -> dict:
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 if dt < cutoff:
-                    # Mark stale jobs with score 0 so they aren't retried
-                    conn.execute(
-                        "UPDATE jobs SET score = 0, tier = 'stale', score_reasoning = 'Skipped — posted over 30 days ago', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (j["id"],),
-                    )
+                    # Mark stale in the appropriate table
+                    if user_id:
+                        _upsert_user_job(conn, user_id, j["id"],
+                                         score=0, tier="stale",
+                                         score_reasoning="Skipped — posted over 30 days ago")
+                    else:
+                        conn.execute(
+                            "UPDATE jobs SET score = 0, tier = 'stale', score_reasoning = 'Skipped — posted over 30 days ago', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            (j["id"],),
+                        )
                     stale_count += 1
                     continue
             except (ValueError, TypeError):
@@ -524,6 +552,16 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30) -> dict:
     api_calls = 0
     batch_size = 5
     desc_limit = 800
+
+    def _save_score(job_id, s, tier, reasoning):
+        if user_id:
+            _upsert_user_job(conn, user_id, job_id,
+                             score=s, tier=tier, score_reasoning=reasoning)
+        else:
+            conn.execute(
+                "UPDATE jobs SET score = ?, tier = ?, score_reasoning = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (s, tier, reasoning, job_id),
+            )
 
     for i in range(0, len(unscored), batch_size):
         batch = unscored[i : i + batch_size]
@@ -550,10 +588,7 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30) -> dict:
 
             for result in results:
                 s = max(0, min(100, result.get("score", 0)))
-                conn.execute(
-                    "UPDATE jobs SET score = ?, tier = ?, score_reasoning = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (s, result.get("tier", "no_match"), result.get("reasoning", ""), result["id"]),
-                )
+                _save_score(result["id"], s, result.get("tier", "no_match"), result.get("reasoning", ""))
                 scored_count += 1
         except Exception:
             # Fallback: score one by one
@@ -570,10 +605,7 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30) -> dict:
                     result = r[0] if isinstance(r, list) else r
                     if result and result.get("score") is not None:
                         s = max(0, min(100, result["score"]))
-                        conn.execute(
-                            "UPDATE jobs SET score = ?, tier = ?, score_reasoning = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (s, result.get("tier", "no_match"), result.get("reasoning", ""), job["id"]),
-                        )
+                        _save_score(job["id"], s, result.get("tier", "no_match"), result.get("reasoning", ""))
                         scored_count += 1
                 except Exception:
                     pass
@@ -589,10 +621,19 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30) -> dict:
 # PHASE 3 — ENRICH (shared, not per-user)
 # ============================================================
 
-def enrich(conn, on_progress=None, max_age_days=30) -> dict:
+def enrich(conn, on_progress=None, max_age_days=30, user_id=None) -> dict:
     """Phase 3: Research hiring manager, salary, culture for high-score jobs.
+    Uses user_jobs scores if user_id provided. Enrichment data stays in shared jobs table.
     Skips jobs older than max_age_days. Returns dict with counts."""
-    rows = conn.execute("SELECT * FROM jobs WHERE score > 70 AND hiring_manager_name IS NULL").fetchall()
+    if user_id:
+        # Find jobs this user scored > 70 that haven't been enriched yet
+        rows = conn.execute(
+            "SELECT j.* FROM jobs j JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ? "
+            "WHERE uj.score > 70 AND j.hiring_manager_name IS NULL",
+            (user_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM jobs WHERE score > 70 AND hiring_manager_name IS NULL").fetchall()
     cols = [d[0] for d in conn.execute("SELECT * FROM jobs WHERE 1=0").description]
     all_hot = [dict(zip(cols, r)) for r in rows]
 
@@ -707,14 +748,23 @@ DEFAULT_EMAIL_BULLETS = """- Experienced professional with a track record of del
 - Comfortable working across distributed teams and time zones"""
 
 
-def draft_emails(conn, user_name="the candidate", user_bullets=None, on_progress=None) -> dict:
+def draft_emails(conn, user_name="the candidate", user_bullets=None, on_progress=None, user_id=None) -> dict:
     """Phase 4: Draft vibe check emails for enriched high-score jobs.
-    Returns dict with drafted count and api_calls."""
+    Writes to user_jobs if user_id provided. Returns dict with drafted count and api_calls."""
     bullets = user_bullets or DEFAULT_EMAIL_BULLETS
 
-    rows = conn.execute(
-        "SELECT * FROM jobs WHERE score > 70 AND hiring_manager_name IS NOT NULL AND vibe_check_email IS NULL"
-    ).fetchall()
+    if user_id:
+        # Find jobs this user scored > 70 that are enriched but don't have a vibe email yet
+        rows = conn.execute(
+            "SELECT j.* FROM jobs j JOIN user_jobs uj ON uj.job_id = j.id AND uj.user_id = ? "
+            "WHERE uj.score > 70 AND j.hiring_manager_name IS NOT NULL "
+            "AND (uj.vibe_check_email IS NULL)",
+            (user_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE score > 70 AND hiring_manager_name IS NOT NULL AND vibe_check_email IS NULL"
+        ).fetchall()
     cols = [d[0] for d in conn.execute("SELECT * FROM jobs WHERE 1=0").description]
     jobs = [dict(zip(cols, r)) for r in rows]
 
@@ -759,10 +809,14 @@ Return ONLY the email body, nothing else.
                 config={"temperature": 0.7},
             )
             api_calls += 1
-            conn.execute(
-                "UPDATE jobs SET vibe_check_email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (response.text.strip(), job["id"]),
-            )
+            email_text = response.text.strip()
+            if user_id:
+                _upsert_user_job(conn, user_id, job["id"], vibe_check_email=email_text)
+            else:
+                conn.execute(
+                    "UPDATE jobs SET vibe_check_email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (email_text, job["id"]),
+                )
             conn.commit()
             drafted_count += 1
         except Exception:
@@ -784,23 +838,28 @@ def run_pipeline(
     user_bullets=None,
     on_progress=None,
     phases=None,
+    user_id=None,
 ) -> dict:
     """Run pipeline phases. Returns summary dict with API call counts.
 
     phases: set of phase names to run, e.g. {"discover", "score", "enrich", "draft"}.
             None or empty = run all 4 phases (full pipeline).
+    user_id: if provided, scores and emails are stored per-user in user_jobs.
     """
     run_all = not phases
     phases = phases or {"discover", "score", "enrich", "draft"}
 
-    # Insert run log
-    conn.execute("INSERT INTO run_log DEFAULT VALUES")
+    # Insert run log (with user_id if the column exists)
+    try:
+        conn.execute("INSERT INTO run_log (user_id) VALUES (?)", (user_id,))
+    except Exception:
+        conn.execute("INSERT INTO run_log DEFAULT VALUES")
     conn.commit()
     run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     total_api_calls = 0
 
-    # Phase 1: Discover
+    # Phase 1: Discover (shared — no user_id needed)
     discovered = {"total": 0, "new": 0, "ai_discovery": False, "api_calls": 0}
     if "discover" in phases:
         if on_progress:
@@ -808,31 +867,31 @@ def run_pipeline(
         discovered = discover(conn, on_progress)
         total_api_calls += discovered.get("api_calls", 0)
 
-    # Phase 2: Score
+    # Phase 2: Score (per-user if user_id provided)
     score_result = {"scored": 0, "skipped_stale": 0, "api_calls": 0}
     if "score" in phases:
         if on_progress:
             on_progress("Phase 2: Scoring fit...")
-        score_result = score(conn, scoring_system, on_progress)
+        score_result = score(conn, scoring_system, on_progress, user_id=user_id)
         total_api_calls += score_result.get("api_calls", 0)
 
-    # Phase 3: Enrich
+    # Phase 3: Enrich (shared data, but triggered by user's scores)
     enrich_result = {"enriched": 0, "skipped_stale": 0, "api_calls": 0}
     if "enrich" in phases:
         if on_progress:
             on_progress("Phase 3: Researching your best shots...")
-        enrich_result = enrich(conn, on_progress)
+        enrich_result = enrich(conn, on_progress, user_id=user_id)
         total_api_calls += enrich_result.get("api_calls", 0)
 
-    # Phase 4: Draft emails
+    # Phase 4: Draft emails (per-user if user_id provided)
     draft_result = {"drafted": 0, "api_calls": 0}
     if "draft" in phases:
         if on_progress:
             on_progress("Phase 4: Drafting outreach...")
-        draft_result = draft_emails(conn, user_name, user_bullets, on_progress)
+        draft_result = draft_emails(conn, user_name, user_bullets, on_progress, user_id=user_id)
         total_api_calls += draft_result.get("api_calls", 0)
 
-    # Update run log (api_calls column may not exist on older schemas — handle gracefully)
+    # Update run log
     try:
         conn.execute(
             "UPDATE run_log SET finished_at = CURRENT_TIMESTAMP, jobs_found = ?, jobs_scored = ?, jobs_enriched = ?, api_calls = ? WHERE id = ?",

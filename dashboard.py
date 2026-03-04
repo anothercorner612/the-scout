@@ -683,13 +683,14 @@ def ensure_schema():
         except Exception:
             pass
 
-    # Add api_calls to run_log if missing
+    # Add api_calls and user_id to run_log if missing
     run_log_cols = {row[1] for row in conn.execute("PRAGMA table_info(run_log)").fetchall()}
-    if "api_calls" not in run_log_cols:
-        try:
-            conn.execute("ALTER TABLE run_log ADD COLUMN api_calls INTEGER DEFAULT 0")
-        except Exception:
-            pass
+    for col, col_type in [("api_calls", "INTEGER DEFAULT 0"), ("user_id", "INTEGER")]:
+        if col not in run_log_cols:
+            try:
+                conn.execute(f"ALTER TABLE run_log ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
 
     conn.commit()
 
@@ -1000,9 +1001,15 @@ def save_user_materials(user_id: int, job_id: int, materials: dict):
     conn.commit()
 
 
-def load_last_run():
+def load_last_run(user_id=None):
     try:
-        df = query_df("SELECT * FROM run_log ORDER BY id DESC LIMIT 1")
+        if user_id:
+            df = query_df(
+                "SELECT * FROM run_log WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                params=(user_id,),
+            )
+        else:
+            df = query_df("SELECT * FROM run_log ORDER BY id DESC LIMIT 1")
         return df.to_dict("records")[0] if not df.empty else None
     except Exception:
         return None
@@ -1537,7 +1544,7 @@ else:
 st.markdown(f'<div class="greeting">{_greeting}</div>', unsafe_allow_html=True)
 
 # Last run info + Scout button
-last_run = load_last_run()
+last_run = load_last_run(user_id=current_user["id"])
 _scout_label = "Scout again" if last_run else "Start scouting"
 
 run_col, btn_col = st.columns([3, 1])
@@ -1622,15 +1629,18 @@ if _regen_and_rescore or _rescore_clicked:
                 except Exception:
                     _update_progress_rescore("Prompt regeneration failed — re-scoring with existing prompt")
 
-            # Clear all existing scores so the score phase picks them up
-            _update_progress_rescore("Clearing existing scores...")
-            conn.execute("UPDATE jobs SET score = NULL, tier = NULL, score_reasoning = NULL WHERE score IS NOT NULL")
+            # Clear this user's scores only (keep status, cover letters, etc.)
+            _update_progress_rescore("Clearing your existing scores...")
+            conn.execute(
+                "UPDATE user_jobs SET score = NULL, tier = NULL, score_reasoning = NULL WHERE user_id = ?",
+                (current_user["id"],),
+            )
             conn.commit()
 
-            # Run score phase only
+            # Run score phase only — writes to user_jobs for this user
             from scout import score as _run_score
             _update_progress_rescore("Scoring all jobs with updated criteria...")
-            score_result = _run_score(conn, current_user.get("scoring_prompt"), _update_progress_rescore)
+            score_result = _run_score(conn, current_user.get("scoring_prompt"), _update_progress_rescore, user_id=current_user["id"])
             _api_count = score_result.get("api_calls", 0)
             _scored = score_result.get("scored", 0)
             _stale = score_result.get("skipped_stale", 0)
@@ -1703,6 +1713,7 @@ if _run_triggered:
                 user_bullets=user_bullets,
                 on_progress=_update_progress,
                 phases=_selected_phases,
+                user_id=current_user["id"],
             )
             _api_count = result.get("api_calls", 0)
             _stale_skipped = result.get("scored", {}).get("skipped_stale", 0) + result.get("enriched", {}).get("skipped_stale", 0)
