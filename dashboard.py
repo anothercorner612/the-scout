@@ -901,21 +901,21 @@ GOALS:
 
 IMPORTANT — THE PROMPT YOU GENERATE MUST ENFORCE THESE CALIBRATION RULES:
 
-1. SCORE DISTRIBUTION: Most jobs should land in the 40-70 range. Scores above 85 should be RARE (fewer than 10% of jobs). A score of 100 should almost never be given — it means the role is a once-in-a-year perfect match.
+1. SCORE DISTRIBUTION: Most jobs should land in the 45-75 range. Scores above 85 should be uncommon (fewer than 15% of jobs). A score of 100 should almost never be given — it means the role is a once-in-a-year perfect match. Importantly, any legitimate role in the candidate's general field should score at LEAST 45-55 even if it isn't a strong fit.
 
 2. SCORING RANGES the prompt must define:
-   - 90-100: EXCEPTIONAL — Near-perfect match on role function, seniority, industry, AND 3+ differentiating skills. Almost never awarded.
-   - 80-89 (tier1): STRONG — Core daily responsibilities clearly match the candidate's primary expertise. Not just "a PM role at a tech company."
+   - 90-100: EXCEPTIONAL — Near-perfect match on role function, seniority, industry, AND 3+ differentiating skills. Uncommon.
+   - 80-89 (tier1): STRONG — Core daily responsibilities clearly match the candidate's primary expertise.
    - 65-79 (tier2): SOLID — Good company, reasonable role, but missing 1-2 key alignment factors (wrong specialization, adjacent function, etc.)
-   - 45-64: MEDIOCRE — Right industry but wrong specialization, or right function but wrong industry.
-   - 20-44: WEAK — Tangential connection at best.
-   - 0: HARD REJECT.
+   - 45-64: MEDIOCRE — Right industry but wrong specialization, or right function but wrong industry. Most generic roles in the candidate's field land here.
+   - 25-44: WEAK — Tangential connection at best.
+   - 0-24: HARD REJECT — Wrong function entirely, spam, or major red flags.
 
-3. BONUS KEYWORDS: Pick 8-12 keywords that are truly DIFFERENTIATING for this candidate — skills/tools that set them apart, NOT table stakes. Keywords like "Agile", "Scrum", "JIRA", "cross-functional", "stakeholder management" appear in every PM posting and MUST NOT be bonus keywords. Each bonus is +3 (not +5), and TOTAL BONUS IS CAPPED AT +10.
+3. BONUS KEYWORDS: Pick 8-12 keywords that are truly DIFFERENTIATING for this candidate — skills/tools that set them apart from other candidates in their field, NOT table stakes. Generic industry-standard terms that appear in most postings of this type MUST NOT be bonus keywords. Each bonus is +3 (not +5), and TOTAL BONUS IS CAPPED AT +10.
 
 4. PENALTIES the prompt must include:
-   - If the role's PRIMARY function is marketing, legal, finance, HR, sales, or support → subtract 20 (even if title says "Operations Manager" or "Program Manager")
-   - If the title implies a seniority mismatch (too senior or too junior) → subtract 15
+   - If the role's PRIMARY function is marketing, legal, finance, HR, sales, or support → subtract 15 (even if title says "Operations Manager" or "Program Manager")
+   - If the title implies a seniority mismatch (too senior or too junior) → subtract 10
    - If the posting requires a language the candidate doesn't speak → score 0
    - If the posting is region-locked outside the candidate's location → score 0
 
@@ -926,8 +926,9 @@ IMPORTANT — THE PROMPT YOU GENERATE MUST ENFORCE THESE CALIBRATION RULES:
 
 Generate the prompt with these sections:
 - Candidate summary (2-3 sentences)
-- Tier 1 definition (base 78-88)
-- Tier 2 definition (base 62-77)
+- Tier 1 definition (base 76-88)
+- Tier 2 definition (base 60-75)
+- No Match definition (base 40-55)
 - Differentiating bonus keywords (8-12 terms, +3 each, cap +10 total)
 - Penalties (role mismatch, seniority mismatch, etc.)
 - Hard rejects (score=0)
@@ -1731,6 +1732,12 @@ if _run_triggered:
 user_id = current_user["id"]
 df = load_jobs_for_user(user_id)
 
+# Normalize inconsistent tier labels from different scoring runs
+_TIER_MAP = {"strong": "tier1", "solid": "tier2", "mediocre": "no_match", "weak": "no_match",
+             "hard reject": "no_match", "hard_reject": "no_match", "n/a": "no_match"}
+if not df.empty and "tier" in df.columns:
+    df["tier"] = df["tier"].apply(lambda t: _TIER_MAP.get(str(t).lower().strip(), t) if pd.notna(t) else t)
+
 # --- Sidebar ---
 with st.sidebar:
     # Account section at top
@@ -1774,6 +1781,10 @@ with st.sidebar:
             "Tier",
             options=[t for t in df["tier"].dropna().unique().tolist()],
             default=[t for t in df["tier"].dropna().unique().tolist()],
+            help="**tier1** = Strong match (80-89) — core responsibilities align with your expertise\n\n"
+                 "**tier2** = Solid fit (65-79) — good role but missing 1-2 alignment factors\n\n"
+                 "**no_match** = Weak/mediocre fit (below 65)\n\n"
+                 "**stale** = Posted over 30 days ago, skipped to save tokens",
         )
 
         statuses_filter = st.multiselect(
@@ -1852,7 +1863,25 @@ if not scored_df.empty and best_count == 0 and warm_count == 0:
         unsafe_allow_html=True,
     )
 
+# Tier legend
+_unscored_count = len(df[df["score"].isna()])
+_tier_legend = (
+    '<div style="display:flex; gap:1.5rem; flex-wrap:wrap; font-size:0.78rem; color:#888; margin-top:0.5rem;">'
+    '<span><strong style="color:#2e7d32;">tier1</strong> Strong match (80-89)</span>'
+    '<span><strong style="color:#1565c0;">tier2</strong> Solid fit (65-79)</span>'
+    '<span><strong style="color:#757575;">no_match</strong> Below 65</span>'
+)
+if _unscored_count:
+    _tier_legend += f'<span style="color:#aaa;">{_unscored_count} unscored — run Score to evaluate</span>'
+_tier_legend += '</div>'
+st.markdown(_tier_legend, unsafe_allow_html=True)
+
 st.markdown(TILDE_DIVIDER, unsafe_allow_html=True)
+
+_TIER_LABELS = {"tier1": "Strong match", "tier2": "Solid fit", "no_match": "Low match", "stale": "Stale"}
+
+def _tier_label(tier_val):
+    return _TIER_LABELS.get(str(tier_val).lower().strip(), str(tier_val) if pd.notna(tier_val) else "")
 
 # --- Best Shots ---
 hot = filtered[filtered["score"] > 70].copy()
@@ -1877,7 +1906,7 @@ if not hot.empty:
                 <div>
                     <div class="job-card-title">{_h(job['title'])}</div>
                     <div class="job-card-company">{_h(job['company'])}{network_badge}</div>
-                    <div class="job-card-meta">{_h(job['platform']).upper()} &nbsp;&middot;&nbsp; {_h(job.get('tier', ''))} &nbsp;&middot;&nbsp; Score {score_val}{_format_date_badge(job)}</div>
+                    <div class="job-card-meta">{_h(job['platform']).upper()} &nbsp;&middot;&nbsp; {_tier_label(job.get('tier', ''))} &nbsp;&middot;&nbsp; Score {score_val}{_format_date_badge(job)}</div>
                 </div>
                 <div class="score-badge">{score_val}</div>
             </div>

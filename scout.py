@@ -100,17 +100,17 @@ CANDIDATE: Experienced professional seeking their next role. No specific profile
 
 SCORING RANGES — follow these carefully:
 - 90-100: EXCEPTIONAL — Reserve for near-perfect matches. A 100 should almost never be given. Requires the role's core function, seniority, and industry to all align precisely.
-- 80-89 (tier1): STRONG — The role's primary responsibilities clearly match the candidate's likely strengths. Not just "a PM role at a tech company."
+- 80-89 (tier1): STRONG — The role's primary responsibilities clearly match the candidate's likely strengths.
 - 65-79 (tier2): SOLID — Good company, reasonable role, but missing 1-2 key alignment factors.
-- 45-64: MEDIOCRE — Right industry but wrong specialization, or right function but wrong industry. Example: a Marketing Operations role when the candidate is a Product PM.
-- 20-44: WEAK — Tangential connection at best. The candidate could theoretically do it but it's not what they're looking for.
-- 0: HARD REJECT — Spam, scam, or roles with major red flags.
+- 45-64: MEDIOCRE — Right industry but wrong specialization, or right function but wrong industry.
+- 25-44: WEAK — Tangential connection at best. The candidate could theoretically do it but it's not what they're looking for.
+- 0-24: HARD REJECT — Spam, scam, wrong function entirely, or roles with major red flags.
 
 REALISM RULES:
 - Do NOT give 90+ just because a role is at a good company or has a nice title. The core day-to-day work must align.
-- Roles where the primary function is marketing, legal, finance, HR, or sales should score 20-50 even if the title contains "Operations" or "Program Manager."
+- Roles where the primary function doesn't match the candidate's field should score lower even if the title sounds similar.
 - Vague or generic postings with buzzwords but no substance → subtract 10.
-- "Table stakes" keywords like Agile, Scrum, JIRA, cross-functional, stakeholder management appear in nearly every PM posting. They do NOT indicate special fit and should NOT boost scores.
+- Common industry-standard terms that appear in nearly every posting of a given type do NOT indicate special fit and should NOT boost scores.
 
 Return ONLY a JSON array with one object per job:
 [{"id":<job_id>,"score":<0-100>,"tier":"tier1"|"tier2"|"no_match","reasoning":"<1 sentence>"}]"""
@@ -528,14 +528,14 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30, user_id=
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 if dt < cutoff:
-                    # Mark stale in the appropriate table
+                    # Mark stale — keep score NULL so stale jobs don't flood the view with zeros
                     if user_id:
                         _upsert_user_job(conn, user_id, j["id"],
-                                         score=0, tier="stale",
+                                         tier="stale",
                                          score_reasoning="Skipped — posted over 30 days ago")
                     else:
                         conn.execute(
-                            "UPDATE jobs SET score = 0, tier = 'stale', score_reasoning = 'Skipped — posted over 30 days ago', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            "UPDATE jobs SET tier = 'stale', score_reasoning = 'Skipped — posted over 30 days ago', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                             (j["id"],),
                         )
                     stale_count += 1
