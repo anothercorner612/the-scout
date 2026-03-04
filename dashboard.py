@@ -4,6 +4,7 @@ import sqlite3
 import os
 import json
 import hashlib
+from html import escape as _esc
 from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
@@ -682,6 +683,14 @@ def ensure_schema():
         except Exception:
             pass
 
+    # Add api_calls to run_log if missing
+    run_log_cols = {row[1] for row in conn.execute("PRAGMA table_info(run_log)").fetchall()}
+    if "api_calls" not in run_log_cols:
+        try:
+            conn.execute("ALTER TABLE run_log ADD COLUMN api_calls INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
     conn.commit()
 
 
@@ -701,7 +710,7 @@ def _check_password(password: str, password_hash: str) -> bool:
     import bcrypt
     try:
         return bcrypt.checkpw(password.encode(), password_hash.encode())
-    except Exception:
+    except (ValueError, TypeError):
         # Fallback for legacy SHA-256 hashes (pre-bcrypt migration)
         return hashlib.sha256(password.encode()).hexdigest() == password_hash
 
@@ -749,6 +758,7 @@ def login_user(username: str, password: str):
         cols = [d[0] for d in conn.execute("SELECT * FROM users WHERE 1=0").description]
         user = dict(zip(cols, row))
         if _check_password(password, user["password_hash"]):
+            user.pop("password_hash", None)
             return user
     return None
 
@@ -758,11 +768,17 @@ def get_user(user_id: int):
     row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if row:
         cols = [d[0] for d in conn.execute("SELECT * FROM users WHERE 1=0").description]
-        return dict(zip(cols, row))
+        user = dict(zip(cols, row))
+        user.pop("password_hash", None)
+        return user
     return None
 
 
+_ALLOWED_USER_FIELDS = {"resume_json", "goals_text", "scoring_prompt", "name", "email"}
+
 def update_user_field(user_id: int, field: str, value):
+    if field not in _ALLOWED_USER_FIELDS:
+        raise ValueError(f"Field not allowed: {field}")
     conn = get_connection()
     conn.execute(f"UPDATE users SET {field} = ? WHERE id = ?", (value, user_id))
     conn.commit()
@@ -805,7 +821,7 @@ def generate_scoring_prompt(resume_json: dict, goals_text: str) -> str:
     resume_str = json.dumps(resume_json, indent=2)[:3000]
     response = ai_client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=f"""Given this candidate's resume and job search goals, generate a scoring system prompt for evaluating job fit (0-100 scale).
+        contents=f"""Given this candidate's resume and job search goals, generate a STRICT scoring system prompt for evaluating job fit (0-100 scale).
 
 RESUME:
 {resume_str}
@@ -813,14 +829,40 @@ RESUME:
 GOALS:
 {goals_text or "Not specified — generate a general-purpose scoring prompt based on the resume"}
 
-Generate a prompt similar to this format but personalized to THIS candidate:
-- Define the candidate's strengths in 2-3 sentences
-- Define Tier 1 roles (base 80-95) — their ideal match
-- Define Tier 2 roles (base 65-80) — strong adjacency
-- List bonus keywords (+5 each)
-- List realism modifiers (title mismatch penalties, etc.)
-- Define hard rejects (score=0)
-- End with: Return ONLY a JSON array with one object per job: [{{"id":<job_id>,"score":<0-100>,"tier":"tier1"|"tier2"|"no_match","reasoning":"<1 sentence>"}}]
+IMPORTANT — THE PROMPT YOU GENERATE MUST ENFORCE THESE CALIBRATION RULES:
+
+1. SCORE DISTRIBUTION: Most jobs should land in the 40-70 range. Scores above 85 should be RARE (fewer than 10% of jobs). A score of 100 should almost never be given — it means the role is a once-in-a-year perfect match.
+
+2. SCORING RANGES the prompt must define:
+   - 90-100: EXCEPTIONAL — Near-perfect match on role function, seniority, industry, AND 3+ differentiating skills. Almost never awarded.
+   - 80-89 (tier1): STRONG — Core daily responsibilities clearly match the candidate's primary expertise. Not just "a PM role at a tech company."
+   - 65-79 (tier2): SOLID — Good company, reasonable role, but missing 1-2 key alignment factors (wrong specialization, adjacent function, etc.)
+   - 45-64: MEDIOCRE — Right industry but wrong specialization, or right function but wrong industry.
+   - 20-44: WEAK — Tangential connection at best.
+   - 0: HARD REJECT.
+
+3. BONUS KEYWORDS: Pick 8-12 keywords that are truly DIFFERENTIATING for this candidate — skills/tools that set them apart, NOT table stakes. Keywords like "Agile", "Scrum", "JIRA", "cross-functional", "stakeholder management" appear in every PM posting and MUST NOT be bonus keywords. Each bonus is +3 (not +5), and TOTAL BONUS IS CAPPED AT +10.
+
+4. PENALTIES the prompt must include:
+   - If the role's PRIMARY function is marketing, legal, finance, HR, sales, or support → subtract 20 (even if title says "Operations Manager" or "Program Manager")
+   - If the title implies a seniority mismatch (too senior or too junior) → subtract 15
+   - If the posting requires a language the candidate doesn't speak → score 0
+   - If the posting is region-locked outside the candidate's location → score 0
+
+5. CALIBRATION EXAMPLES the prompt must include (adapted to this candidate):
+   - "A score of 50 looks like: [example of a mediocre-fit role for THIS candidate]"
+   - "A score of 75 looks like: [example of a solid-fit role for THIS candidate]"
+   - "A score of 90 looks like: [example of an exceptional role for THIS candidate]"
+
+Generate the prompt with these sections:
+- Candidate summary (2-3 sentences)
+- Tier 1 definition (base 78-88)
+- Tier 2 definition (base 62-77)
+- Differentiating bonus keywords (8-12 terms, +3 each, cap +10 total)
+- Penalties (role mismatch, seniority mismatch, etc.)
+- Hard rejects (score=0)
+- Calibration examples (what 50, 75, 90 look like for this person)
+- End with: Return ONLY a JSON array: [{{"id":<job_id>,"score":<0-100>,"tier":"tier1"|"tier2"|"no_match","reasoning":"<1 sentence>"}}]
 
 Return ONLY the scoring system prompt text, nothing else.""",
         config={"temperature": 0.3},
@@ -905,6 +947,19 @@ def _safe_str(val, default=""):
     if pd.isna(val):
         return default
     return str(val)
+
+
+def _h(val):
+    """HTML-escape a value for safe interpolation into HTML."""
+    return _esc(str(val)) if val and not pd.isna(val) else ""
+
+
+def _safe_url(val):
+    """Return a URL safe for use in href, or '#' if suspicious."""
+    url = str(val).strip() if val and not pd.isna(val) else ""
+    if url and url.lower().startswith(("http://", "https://")):
+        return _esc(url, quote=True)
+    return "#"
 
 
 def _to_str(val):
@@ -1087,21 +1142,20 @@ Return ONLY the answer text."""
     return response.text.strip()
 
 
-def load_contacts(user_id=None):
+def load_contacts(user_id):
+    if not user_id:
+        return pd.DataFrame()
     try:
-        if user_id:
-            return query_df("SELECT * FROM contacts WHERE user_id = ?", params=(user_id,))
-        return query_df("SELECT * FROM contacts")
+        return query_df("SELECT * FROM contacts WHERE user_id = ?", params=(user_id,))
     except Exception:
         return pd.DataFrame()
 
 
-def save_contacts(df_contacts, user_id=None):
+def save_contacts(df_contacts, user_id):
+    if not user_id:
+        return
     conn = get_connection()
-    if user_id:
-        conn.execute("DELETE FROM contacts WHERE user_id = ?", (user_id,))
-    else:
-        conn.execute("DELETE FROM contacts")
+    conn.execute("DELETE FROM contacts WHERE user_id = ?", (user_id,))
     for _, row in df_contacts.iterrows():
         conn.execute(
             "INSERT INTO contacts (user_id, first_name, last_name, email, company, position, connected_on) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1204,7 +1258,7 @@ def show_profile_setup(user):
 
     # Sidebar with account controls during setup
     with st.sidebar:
-        display_name = user.get("name") or user["username"]
+        display_name = _h(user.get("name") or user["username"])
         st.markdown(
             f'<div style="font-family: Instrument Serif, serif; font-size: 1.2rem; '
             f'margin-bottom: 0.25rem;">{display_name}</div>',
@@ -1389,10 +1443,14 @@ if needs_setup:
     show_profile_setup(current_user)
     st.stop()
 
-# Greeting
+# Greeting (use US Eastern as default — server may be UTC on Streamlit Cloud)
 from datetime import datetime as _dt
-_hour = _dt.now().hour
-_first_name = (current_user.get("name") or "").split()[0] if current_user.get("name") else ""
+try:
+    from zoneinfo import ZoneInfo
+    _hour = _dt.now(ZoneInfo("America/New_York")).hour
+except Exception:
+    _hour = _dt.now().hour
+_first_name = _h((current_user.get("name") or "").split()[0]) if current_user.get("name") else ""
 if _hour < 12:
     _greeting = f"Good morning{', ' + _first_name if _first_name else ''}."
 elif _hour < 17:
@@ -1401,19 +1459,23 @@ else:
     _greeting = f"Good evening{', ' + _first_name if _first_name else ''}."
 st.markdown(f'<div class="greeting">{_greeting}</div>', unsafe_allow_html=True)
 
-# Last run info + Scout button on one row
+# Last run info + Scout button
 last_run = load_last_run()
 _scout_label = "Scout again" if last_run else "Start scouting"
 
 run_col, btn_col = st.columns([3, 1])
 with run_col:
     if last_run:
+        _api_info = ""
+        if last_run.get("api_calls"):
+            _api_info = f' &nbsp;&middot;&nbsp; {last_run["api_calls"]} AI calls'
         st.markdown(
             f'<div class="run-info">'
             f'Last scouted {last_run["started_at"]} &nbsp;&middot;&nbsp; '
             f'{last_run["jobs_found"]} found &nbsp;&middot;&nbsp; '
             f'{last_run["jobs_scored"]} scored &nbsp;&middot;&nbsp; '
             f'{last_run["jobs_enriched"]} researched'
+            f'{_api_info}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -1422,11 +1484,117 @@ with btn_col:
     scout_clicked = st.button(_scout_label)
     st.markdown('</div>', unsafe_allow_html=True)
 
+# Partial pipeline controls
+with st.expander("Run specific phases (saves tokens)"):
+    st.markdown(
+        '<span style="font-size: 0.85rem; color: #9C9488;">'
+        'Pick individual phases instead of running the full pipeline. '
+        'Discover scans job boards, Score rates fit, Enrich researches top picks, Draft writes outreach emails.'
+        '</span>',
+        unsafe_allow_html=True,
+    )
+    pc1, pc2, pc3, pc4, pc5 = st.columns([1, 1, 1, 1, 1])
+    with pc1:
+        _phase_discover = st.button("Discover", key="phase_discover", use_container_width=True)
+    with pc2:
+        _phase_score = st.button("Score", key="phase_score", use_container_width=True)
+    with pc3:
+        _phase_enrich = st.button("Enrich", key="phase_enrich", use_container_width=True)
+    with pc4:
+        _phase_draft = st.button("Draft", key="phase_draft", use_container_width=True)
+    with pc5:
+        _phase_discover_score = st.button("Discover + Score", key="phase_disc_score", use_container_width=True)
+
+    st.markdown("---")
+    st.markdown(
+        '<span style="font-size: 0.85rem; color: #9C9488;">'
+        'Re-score clears all existing scores and re-evaluates every job with your current scoring criteria. '
+        'Useful after updating your profile or search goals.'
+        '</span>',
+        unsafe_allow_html=True,
+    )
+    rc1, rc2 = st.columns([1, 3])
+    with rc1:
+        _rescore_clicked = st.button("Re-score all", key="rescore_all", type="secondary", use_container_width=True)
+    with rc2:
+        _regen_and_rescore = st.button("Regenerate prompt + re-score", key="regen_rescore", type="secondary", use_container_width=True)
+
+# Handle re-score actions (must run before the normal pipeline trigger)
+if _regen_and_rescore or _rescore_clicked:
+    with st.status("Re-scoring all jobs...", expanded=True) as status:
+        progress = st.empty()
+
+        def _update_progress_rescore(msg):
+            progress.markdown(
+                f'<div class="scout-running">~ {msg}</div>',
+                unsafe_allow_html=True,
+            )
+
+        try:
+            conn = get_connection()
+
+            # Regenerate scoring prompt if requested
+            if _regen_and_rescore and current_user.get("resume_json"):
+                _update_progress_rescore("Regenerating your scoring prompt with tighter criteria...")
+                try:
+                    rd = json.loads(current_user["resume_json"]) if isinstance(current_user["resume_json"], str) else current_user["resume_json"]
+                    new_prompt = generate_scoring_prompt(rd, current_user.get("goals_text", ""))
+                    update_user_field(current_user["id"], "scoring_prompt", new_prompt)
+                    current_user["scoring_prompt"] = new_prompt
+                    _update_progress_rescore("New scoring prompt generated")
+                except Exception:
+                    _update_progress_rescore("Prompt regeneration failed — re-scoring with existing prompt")
+
+            # Clear all existing scores so the score phase picks them up
+            _update_progress_rescore("Clearing existing scores...")
+            conn.execute("UPDATE jobs SET score = NULL, tier = NULL, score_reasoning = NULL WHERE score IS NOT NULL")
+            conn.commit()
+
+            # Run score phase only
+            from scout import score as _run_score
+            _update_progress_rescore("Scoring all jobs with updated criteria...")
+            score_result = _run_score(conn, current_user.get("scoring_prompt"), _update_progress_rescore)
+            _api_count = score_result.get("api_calls", 0)
+            _scored = score_result.get("scored", 0)
+            _stale = score_result.get("skipped_stale", 0)
+            _label = f"Done — {_scored} jobs re-scored, {_api_count} AI calls"
+            if _stale:
+                _label += f", {_stale} stale skipped"
+            status.update(label=_label, state="complete", expanded=False)
+            st.cache_resource.clear()
+            st.rerun()
+        except Exception:
+            status.update(label="Something went wrong", state="error")
+            st.error("Re-scoring failed. Please try again.")
+
+# Determine which phases to run
+_selected_phases = None
+_run_triggered = False
 if scout_clicked:
-    with st.status("Scouting for new roles...", expanded=True) as status:
+    _run_triggered = True
+    _selected_phases = None  # full pipeline
+elif _phase_discover:
+    _run_triggered = True
+    _selected_phases = {"discover"}
+elif _phase_score:
+    _run_triggered = True
+    _selected_phases = {"score"}
+elif _phase_enrich:
+    _run_triggered = True
+    _selected_phases = {"enrich"}
+elif _phase_draft:
+    _run_triggered = True
+    _selected_phases = {"draft"}
+elif _phase_discover_score:
+    _run_triggered = True
+    _selected_phases = {"discover", "score"}
+
+if _run_triggered:
+    _phase_label = "full scout" if not _selected_phases else " + ".join(sorted(_selected_phases))
+    with st.status(f"Running {_phase_label}...", expanded=True) as status:
         progress = st.empty()
         progress.markdown(
-            '<div class="scout-running">~ discovering roles across job boards...</div>',
+            '<div class="scout-running">~ starting up...</div>',
             unsafe_allow_html=True,
         )
 
@@ -1457,13 +1625,19 @@ if scout_clicked:
                 user_name=current_user.get("name") or "the candidate",
                 user_bullets=user_bullets,
                 on_progress=_update_progress,
+                phases=_selected_phases,
             )
-            status.update(label="Done scouting", state="complete", expanded=False)
+            _api_count = result.get("api_calls", 0)
+            _stale_skipped = result.get("scored", {}).get("skipped_stale", 0) + result.get("enriched", {}).get("skipped_stale", 0)
+            _done_label = f"Done — {_api_count} AI call{'s' if _api_count != 1 else ''} used"
+            if _stale_skipped:
+                _done_label += f", {_stale_skipped} stale job{'s' if _stale_skipped != 1 else ''} skipped"
+            status.update(label=_done_label, state="complete", expanded=False)
             st.cache_resource.clear()
             st.rerun()
         except Exception as e:
             status.update(label="Something went wrong", state="error")
-            st.code(str(e)[-500:] if str(e) else "Unknown error")
+            st.error("Something went wrong during scouting. Please try again.")
 
 # --- Load Data ---
 user_id = current_user["id"]
@@ -1472,7 +1646,7 @@ df = load_jobs_for_user(user_id)
 # --- Sidebar ---
 with st.sidebar:
     # Account section at top
-    display_name = current_user.get("name") or current_user["username"]
+    display_name = _h(current_user.get("name") or current_user["username"])
     st.markdown(
         f'<div style="font-family: Instrument Serif, serif; font-size: 1.2rem; '
         f'margin-bottom: 0.25rem;">{display_name}</div>',
@@ -1538,7 +1712,7 @@ with st.sidebar:
             save_contacts(csv_df, user_id)
             st.success(f"Loaded {len(csv_df)} connections")
         except Exception as e:
-            st.error(f"CSV import failed: {e}")
+            st.error("CSV import failed. Please check the file format and try again.")
 
 if df.empty:
     st.markdown(
@@ -1612,9 +1786,9 @@ if not hot.empty:
         <div class="job-card">
             <div style="display: flex; justify-content: space-between; align-items: flex-start;">
                 <div>
-                    <div class="job-card-title">{job['title']}</div>
-                    <div class="job-card-company">{job['company']}{network_badge}</div>
-                    <div class="job-card-meta">{job['platform'].upper()} &nbsp;&middot;&nbsp; {job.get('tier', '')} &nbsp;&middot;&nbsp; Score {score_val}{_format_date_badge(job)}</div>
+                    <div class="job-card-title">{_h(job['title'])}</div>
+                    <div class="job-card-company">{_h(job['company'])}{network_badge}</div>
+                    <div class="job-card-meta">{_h(job['platform']).upper()} &nbsp;&middot;&nbsp; {_h(job.get('tier', ''))} &nbsp;&middot;&nbsp; Score {score_val}{_format_date_badge(job)}</div>
                 </div>
                 <div class="score-badge">{score_val}</div>
             </div>
@@ -1625,26 +1799,26 @@ if not hot.empty:
         sal_max = job.get("salary_max")
         if pd.notna(sal_min) and pd.notna(sal_max) and sal_min and sal_max:
             sal_src = _safe_str(job.get("salary_source"))
-            src_label = f" ({sal_src})" if sal_src else ""
+            src_label = f" ({_h(sal_src)})" if sal_src else ""
             details.append(f"<strong>Salary:</strong> ${int(sal_min):,} – ${int(sal_max):,}{src_label}")
         gd = _safe_str(job.get("glassdoor_rating"))
         cf = _safe_str(job.get("culture_flags"))
         culture_parts = []
         if gd and gd.lower() != "unknown":
-            culture_parts.append(f"Glassdoor {gd}")
+            culture_parts.append(f"Glassdoor {_h(gd)}")
         if cf and cf.lower() != "unknown":
-            culture_parts.append(cf)
+            culture_parts.append(_h(cf))
         if culture_parts:
             details.append(f"<strong>Culture:</strong> {' · '.join(culture_parts)}")
         if job.get("score_reasoning"):
-            details.append(f"<strong>Fit:</strong> {job['score_reasoning']}")
+            details.append(f"<strong>Fit:</strong> {_h(job['score_reasoning'])}")
         if job.get("hiring_manager_name") and job["hiring_manager_name"] != "Unknown":
-            hm_title = job.get("hiring_manager_title", "")
+            hm_title = _h(job.get("hiring_manager_title", ""))
             details.append(
-                f"<strong>Reach out to:</strong> {job['hiring_manager_name']} ({hm_title})"
+                f"<strong>Reach out to:</strong> {_h(job['hiring_manager_name'])} ({hm_title})"
             )
         if job.get("company_win") and job["company_win"] != "No recent news found.":
-            win_text = job["company_win"][:120]
+            win_text = _h(job["company_win"][:120])
             details.append(f"<strong>Recent:</strong> {win_text}...")
 
         if details:
@@ -1652,7 +1826,7 @@ if not hot.empty:
 
         card_html += f"""
             <div style="margin-top: 0.8rem;">
-                <a class="job-card-link" href="{job['url']}" target="_blank">View posting &rarr;</a>
+                <a class="job-card-link" href="{_safe_url(job['url'])}" target="_blank">View posting &rarr;</a>
             </div>
         </div>
         """
@@ -1684,8 +1858,8 @@ if not hot.empty:
                         save_user_materials(user_id, job_id, materials)
                         st.cache_resource.clear()
                         st.rerun()
-                except Exception as e:
-                    st.error(f"Failed: {e}")
+                except Exception:
+                    st.error("Failed to generate materials. Please try again.")
 
         # Expandable content
         if job.get("vibe_check_email"):
@@ -1738,8 +1912,8 @@ if not hot.empty:
                         key=f"appq_ans_{job_id}",
                         label_visibility="collapsed",
                     )
-                except Exception as e:
-                    st.error(f"Failed: {e}")
+                except Exception:
+                    st.error("Failed to draft answer. Please try again.")
 
 st.markdown(TILDE_DIVIDER, unsafe_allow_html=True)
 
@@ -1761,10 +1935,10 @@ if not warm.empty:
             f'<div class="job-card" style="padding: 1rem 1.4rem;">'
             f'<div style="display: flex; justify-content: space-between; align-items: center;">'
             f'<div>'
-            f'<span class="job-card-title" style="font-size: 1.05rem;">{job["title"]}</span>'
-            f'<span class="job-card-meta" style="margin-left: 0.8rem;">{job["company"]} &middot; {score_val}</span>'
+            f'<span class="job-card-title" style="font-size: 1.05rem;">{_h(job["title"])}</span>'
+            f'<span class="job-card-meta" style="margin-left: 0.8rem;">{_h(job["company"])} &middot; {score_val}</span>'
             f'</div>'
-            f'<a class="job-card-link" href="{job["url"]}" target="_blank">View &rarr;</a>'
+            f'<a class="job-card-link" href="{_safe_url(job["url"])}" target="_blank">View &rarr;</a>'
             f'</div></div>',
             unsafe_allow_html=True,
         )
@@ -1789,7 +1963,7 @@ st.dataframe(
     hide_index=True,
     column_config={
         "url": st.column_config.LinkColumn("Link", display_text="Open"),
-        "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100),
+        "score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
         "title": st.column_config.TextColumn("Role"),
         "company": st.column_config.TextColumn("Company"),
         "platform": st.column_config.TextColumn("Source"),
@@ -1817,15 +1991,15 @@ if network_matches:
             continue
         job_row = job_row.iloc[0]
         for contact in contacts:
-            name = f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip()
-            position = contact.get("position", "")
-            company = contact.get("company", "")
+            name = _h(f"{contact.get('first_name', '')} {contact.get('last_name', '')}".strip())
+            position = _h(contact.get("position", ""))
+            company = _h(contact.get("company", ""))
             pos_label = f" — {position}" if position else ""
             st.markdown(
                 f'<div class="job-card" style="padding: 0.8rem 1.4rem;">'
                 f'<span class="job-card-title" style="font-size: 1rem;">{name}</span>'
                 f'<span class="job-card-meta" style="margin-left: 0.6rem;">{company}{pos_label}</span>'
-                f'<br><span class="job-card-meta">Role: {job_row["title"]}</span>'
+                f'<br><span class="job-card-meta">Role: {_h(job_row["title"])}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )

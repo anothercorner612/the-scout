@@ -94,22 +94,23 @@ SEED_COMPANIES = [
 ]
 
 # Default scoring system (used when no per-user prompt exists — generic fallback)
-DEFAULT_SCORING_SYSTEM = """You are a job-fit scoring engine. Score each job 0-100.
+DEFAULT_SCORING_SYSTEM = """You are a strict job-fit scoring engine. Score each job 0-100. Most jobs should score 40-70. Scores above 85 should be rare and require exceptional alignment.
 
 CANDIDATE: Experienced professional seeking their next role. No specific profile provided — score based on general job quality signals.
 
-TIER 1 (base 80-95): Roles with clear growth potential, competitive compensation signals, and strong company reputation.
-TIER 2 (base 65-80): Solid roles at established companies with reasonable scope and responsibilities.
+SCORING RANGES — follow these carefully:
+- 90-100: EXCEPTIONAL — Reserve for near-perfect matches. A 100 should almost never be given. Requires the role's core function, seniority, and industry to all align precisely.
+- 80-89 (tier1): STRONG — The role's primary responsibilities clearly match the candidate's likely strengths. Not just "a PM role at a tech company."
+- 65-79 (tier2): SOLID — Good company, reasonable role, but missing 1-2 key alignment factors.
+- 45-64: MEDIOCRE — Right industry but wrong specialization, or right function but wrong industry. Example: a Marketing Operations role when the candidate is a Product PM.
+- 20-44: WEAK — Tangential connection at best. The candidate could theoretically do it but it's not what they're looking for.
+- 0: HARD REJECT — Spam, scam, or roles with major red flags.
 
-REALISM MODIFIERS — APPLY THESE AFTER BASE SCORE:
-- Role has clear, specific responsibilities and requirements → no penalty
-- Vague or generic job posting with buzzwords but no substance → subtract 10
-- Company has <5000 employees → add 5 (more impact potential)
-- Company is FAANG/Big Tech → no modifier (neutral without candidate context)
-
-HARD REJECT (score=0): Obvious spam, scam postings, or roles with major red flags.
-
-NOTE: This is a generic scoring fallback. For personalized scoring, users should upload their resume and set search criteria in The Scout dashboard.
+REALISM RULES:
+- Do NOT give 90+ just because a role is at a good company or has a nice title. The core day-to-day work must align.
+- Roles where the primary function is marketing, legal, finance, HR, or sales should score 20-50 even if the title contains "Operations" or "Program Manager."
+- Vague or generic postings with buzzwords but no substance → subtract 10.
+- "Table stakes" keywords like Agile, Scrum, JIRA, cross-functional, stakeholder management appear in nearly every PM posting. They do NOT indicate special fit and should NOT boost scores.
 
 Return ONLY a JSON array with one object per job:
 [{"id":<job_id>,"score":<0-100>,"tier":"tier1"|"tier2"|"no_match","reasoning":"<1 sentence>"}]"""
@@ -376,16 +377,42 @@ async def _scan_all_ats(slugs: list, on_progress=None) -> list:
     return all_jobs
 
 
-def discover(conn, on_progress=None) -> dict:
-    """Phase 1: Discover jobs from ATS APIs + Gemini grounded search."""
-    if on_progress:
-        on_progress("Asking Gemini for companies with open roles...")
+def _hours_since_last_run(conn) -> float:
+    """Return hours since the last completed pipeline run, or infinity if none."""
+    try:
+        row = conn.execute(
+            "SELECT finished_at FROM run_log WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row and row[0]:
+            from datetime import datetime, timezone
+            finished = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+            if finished.tzinfo is None:
+                finished = finished.replace(tzinfo=timezone.utc)
+            delta = datetime.now(timezone.utc) - finished
+            return delta.total_seconds() / 3600
+    except Exception:
+        pass
+    return float("inf")
+
+
+def discover(conn, on_progress=None, skip_ai_discovery=False) -> dict:
+    """Phase 1: Discover jobs from ATS APIs + Gemini grounded search.
+    If skip_ai_discovery=True (or auto-detected as recent run), skips the
+    expensive Gemini Pro grounded search and just scans ATS APIs with seed list."""
+    api_calls = 0
+
+    # Smart cache: skip Gemini discovery if last run was < 24 hours ago
+    hours = _hours_since_last_run(conn)
+    use_ai = not skip_ai_discovery and hours >= 24
 
     ai_companies = []
-    try:
-        response = ai_client.models.generate_content(
-            model=MODELS["pro"],
-            contents="""
+    if use_ai:
+        if on_progress:
+            on_progress("Asking Gemini for companies with open roles...")
+        try:
+            response = ai_client.models.generate_content(
+                model=MODELS["pro"],
+                contents="""
 Search for US tech companies (under 5000 employees preferred) currently hiring for remote roles in:
 - Project Manager (web, digital, SaaS implementation, platform migration)
 - Program Manager, Technical Program Manager
@@ -413,15 +440,20 @@ Return a JSON array of lowercase company name slugs:
 
 Return 40-60 companies. Return ONLY the JSON array.
 """,
-            config={"tools": [{"google_search": {}}], "temperature": 0.2},
-        )
-        text = response.text.replace("```json\n", "").replace("```", "").strip()
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            ai_companies = [c.lower().replace(" ", "-") for c in parsed]
-    except Exception as e:
+                config={"tools": [{"google_search": {}}], "temperature": 0.2},
+            )
+            api_calls += 1
+            text = response.text.replace("```json\n", "").replace("```", "").strip()
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                ai_companies = [c.lower().replace(" ", "-") for c in parsed]
+        except Exception as e:
+            if on_progress:
+                on_progress(f"Gemini discovery failed ({e}), using seed list only")
+    else:
+        reason = "recent run" if hours < 24 else "skipped by user"
         if on_progress:
-            on_progress(f"Gemini discovery failed ({e}), using seed list only")
+            on_progress(f"Skipping AI company discovery ({reason}) — scanning ATS with seed list...")
 
     # Merge + deduplicate
     all_slugs = list(set(SEED_COMPANIES + ai_companies))
@@ -445,21 +477,51 @@ Return 40-60 companies. Return ONLY the JSON array.
             new_count += 1
     conn.commit()
 
-    return {"total": len(all_jobs), "new": new_count}
+    return {"total": len(all_jobs), "new": new_count, "ai_discovery": use_ai, "api_calls": api_calls}
 
 
 # ============================================================
 # PHASE 2 — SCORE
 # ============================================================
 
-def score(conn, scoring_system=None, on_progress=None) -> int:
-    """Phase 2: Score unscored jobs. Uses scoring_system prompt (per-user or default)."""
+def score(conn, scoring_system=None, on_progress=None, max_age_days=30) -> dict:
+    """Phase 2: Score unscored jobs. Skips jobs older than max_age_days.
+    Returns dict with scored count and api_calls count."""
     system_prompt = scoring_system or DEFAULT_SCORING_SYSTEM
     rows = conn.execute("SELECT * FROM jobs WHERE score IS NULL").fetchall()
     cols = [d[0] for d in conn.execute("SELECT * FROM jobs WHERE 1=0").description]
-    unscored = [dict(zip(cols, r)) for r in rows]
+    unscored_all = [dict(zip(cols, r)) for r in rows]
+
+    # Filter out stale jobs — don't waste tokens scoring old postings
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    unscored = []
+    stale_count = 0
+    for j in unscored_all:
+        posted = j.get("posted_at")
+        if posted:
+            try:
+                dt = datetime.fromisoformat(str(posted).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt < cutoff:
+                    # Mark stale jobs with score 0 so they aren't retried
+                    conn.execute(
+                        "UPDATE jobs SET score = 0, tier = 'stale', score_reasoning = 'Skipped — posted over 30 days ago', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (j["id"],),
+                    )
+                    stale_count += 1
+                    continue
+            except (ValueError, TypeError):
+                pass  # unparseable date — score it anyway
+        unscored.append(j)
+    if stale_count:
+        conn.commit()
+        if on_progress:
+            on_progress(f"Skipped {stale_count} stale job(s) older than {max_age_days} days")
 
     scored_count = 0
+    api_calls = 0
     batch_size = 5
     desc_limit = 800
 
@@ -481,6 +543,7 @@ def score(conn, scoring_system=None, on_progress=None) -> int:
                 contents=f"{system_prompt}\n\nJOBS TO SCORE:\n{job_list}",
                 config={"temperature": 0.1},
             )
+            api_calls += 1
             results = extract_json(response.text)
             if not isinstance(results, list):
                 raise ValueError("Non-array response")
@@ -502,6 +565,7 @@ def score(conn, scoring_system=None, on_progress=None) -> int:
                         contents=f'{system_prompt}\n\nJOBS TO SCORE:\n[ID:{job["id"]}] "{job["title"]}" at {job["company"]}\n{desc}',
                         config={"temperature": 0.1},
                     )
+                    api_calls += 1
                     r = extract_json(resp.text)
                     result = r[0] if isinstance(r, list) else r
                     if result and result.get("score") is not None:
@@ -518,20 +582,43 @@ def score(conn, scoring_system=None, on_progress=None) -> int:
         conn.commit()
         time.sleep(1)
 
-    return scored_count
+    return {"scored": scored_count, "skipped_stale": stale_count, "api_calls": api_calls}
 
 
 # ============================================================
 # PHASE 3 — ENRICH (shared, not per-user)
 # ============================================================
 
-def enrich(conn, on_progress=None) -> int:
-    """Phase 3: Research hiring manager, salary, culture for high-score jobs."""
+def enrich(conn, on_progress=None, max_age_days=30) -> dict:
+    """Phase 3: Research hiring manager, salary, culture for high-score jobs.
+    Skips jobs older than max_age_days. Returns dict with counts."""
     rows = conn.execute("SELECT * FROM jobs WHERE score > 70 AND hiring_manager_name IS NULL").fetchall()
     cols = [d[0] for d in conn.execute("SELECT * FROM jobs WHERE 1=0").description]
-    hot_jobs = [dict(zip(cols, r)) for r in rows]
+    all_hot = [dict(zip(cols, r)) for r in rows]
+
+    # Filter out stale jobs — don't spend Pro model tokens on old postings
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    hot_jobs = []
+    stale_count = 0
+    for j in all_hot:
+        posted = j.get("posted_at")
+        if posted:
+            try:
+                dt = datetime.fromisoformat(str(posted).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt < cutoff:
+                    stale_count += 1
+                    continue
+            except (ValueError, TypeError):
+                pass
+        hot_jobs.append(j)
+    if stale_count and on_progress:
+        on_progress(f"Skipped {stale_count} stale job(s) — too old to enrich")
 
     enriched_count = 0
+    api_calls = 0
     for idx, job in enumerate(hot_jobs):
         if on_progress:
             on_progress(f"Researching [{idx + 1}/{len(hot_jobs)}] {job['company']}...")
@@ -542,6 +629,7 @@ def enrich(conn, on_progress=None) -> int:
                 contents=f'Who is the hiring manager or team lead for "{job["title"]}" at {job["company"]}? Search LinkedIn and the company team page. Give me their full name and title.',
                 config={"tools": [{"google_search": {}}], "temperature": 0.1},
             )
+            api_calls += 1
             win_response = ai_client.models.generate_content(
                 model=MODELS["pro"],
                 contents=f"""Research {job["company"]}:
@@ -550,11 +638,13 @@ def enrich(conn, on_progress=None) -> int:
 3. Any notable culture reputation — remote-friendly? Recent layoffs? Known for good/bad work-life balance? Give 2-3 short flags.""",
                 config={"tools": [{"google_search": {}}], "temperature": 0.1},
             )
+            api_calls += 1
             salary_response = ai_client.models.generate_content(
                 model=MODELS["pro"],
                 contents=f'What is the typical salary range for "{job["title"]}" at {job["company"]}? Search Glassdoor, Levels.fyi, Payscale, and the job posting itself. Give the min and max annual salary in USD and cite the source.',
                 config={"tools": [{"google_search": {}}], "temperature": 0.1},
             )
+            api_calls += 1
 
             hm_raw = hm_response.text or ""
             win_raw = win_response.text or ""
@@ -576,6 +666,7 @@ Return ONLY valid JSON:
 {{"name":"<full name or Unknown>","title":"<job title or Unknown>","win":"<one sentence company achievement or No recent news found.>","glassdoor_rating":"<e.g. 3.8/5 or Unknown>","culture_flags":"<2-3 short comma-separated flags like Remote-friendly, Good WLB, Recent layoffs — or Unknown>","salary_min":<integer or null>,"salary_max":<integer or null>,"salary_source":"<e.g. Glassdoor, Levels.fyi, job posting, or null>"}}""",
                 config={"temperature": 0.0},
             )
+            api_calls += 1
 
             data = extract_json(parse_response.text) or {}
             conn.execute(
@@ -603,7 +694,7 @@ Return ONLY valid JSON:
 
         time.sleep(2)
 
-    return enriched_count
+    return {"enriched": enriched_count, "skipped_stale": stale_count, "api_calls": api_calls}
 
 
 # ============================================================
@@ -616,8 +707,9 @@ DEFAULT_EMAIL_BULLETS = """- Experienced professional with a track record of del
 - Comfortable working across distributed teams and time zones"""
 
 
-def draft_emails(conn, user_name="the candidate", user_bullets=None, on_progress=None) -> int:
-    """Phase 4: Draft vibe check emails for enriched high-score jobs."""
+def draft_emails(conn, user_name="the candidate", user_bullets=None, on_progress=None) -> dict:
+    """Phase 4: Draft vibe check emails for enriched high-score jobs.
+    Returns dict with drafted count and api_calls."""
     bullets = user_bullets or DEFAULT_EMAIL_BULLETS
 
     rows = conn.execute(
@@ -627,6 +719,7 @@ def draft_emails(conn, user_name="the candidate", user_bullets=None, on_progress
     jobs = [dict(zip(cols, r)) for r in rows]
 
     drafted_count = 0
+    api_calls = 0
     for job in jobs:
         if on_progress:
             on_progress(f"Drafting email for {job['title']} at {job['company']}...")
@@ -665,6 +758,7 @@ Return ONLY the email body, nothing else.
                 contents=prompt,
                 config={"temperature": 0.7},
             )
+            api_calls += 1
             conn.execute(
                 "UPDATE jobs SET vibe_check_email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (response.text.strip(), job["id"]),
@@ -676,50 +770,89 @@ Return ONLY the email body, nothing else.
 
         time.sleep(1)
 
-    return drafted_count
+    return {"drafted": drafted_count, "api_calls": api_calls}
 
 
 # ============================================================
 # ORCHESTRATOR
 # ============================================================
 
-def run_pipeline(conn, scoring_system=None, user_name="the candidate", user_bullets=None, on_progress=None) -> dict:
-    """Run all 4 pipeline phases. Returns summary dict."""
+def run_pipeline(
+    conn,
+    scoring_system=None,
+    user_name="the candidate",
+    user_bullets=None,
+    on_progress=None,
+    phases=None,
+) -> dict:
+    """Run pipeline phases. Returns summary dict with API call counts.
+
+    phases: set of phase names to run, e.g. {"discover", "score", "enrich", "draft"}.
+            None or empty = run all 4 phases (full pipeline).
+    """
+    run_all = not phases
+    phases = phases or {"discover", "score", "enrich", "draft"}
+
     # Insert run log
     conn.execute("INSERT INTO run_log DEFAULT VALUES")
     conn.commit()
     run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
+    total_api_calls = 0
+
     # Phase 1: Discover
-    if on_progress:
-        on_progress("Phase 1: Discovering roles...")
-    discovered = discover(conn, on_progress)
+    discovered = {"total": 0, "new": 0, "ai_discovery": False, "api_calls": 0}
+    if "discover" in phases:
+        if on_progress:
+            on_progress("Phase 1: Discovering roles...")
+        discovered = discover(conn, on_progress)
+        total_api_calls += discovered.get("api_calls", 0)
 
     # Phase 2: Score
-    if on_progress:
-        on_progress("Phase 2: Scoring fit...")
-    scored = score(conn, scoring_system, on_progress)
+    score_result = {"scored": 0, "skipped_stale": 0, "api_calls": 0}
+    if "score" in phases:
+        if on_progress:
+            on_progress("Phase 2: Scoring fit...")
+        score_result = score(conn, scoring_system, on_progress)
+        total_api_calls += score_result.get("api_calls", 0)
 
     # Phase 3: Enrich
-    if on_progress:
-        on_progress("Phase 3: Researching your best shots...")
-    enriched = enrich(conn, on_progress)
+    enrich_result = {"enriched": 0, "skipped_stale": 0, "api_calls": 0}
+    if "enrich" in phases:
+        if on_progress:
+            on_progress("Phase 3: Researching your best shots...")
+        enrich_result = enrich(conn, on_progress)
+        total_api_calls += enrich_result.get("api_calls", 0)
 
     # Phase 4: Draft emails
-    if on_progress:
-        on_progress("Phase 4: Drafting outreach...")
-    drafted = draft_emails(conn, user_name, user_bullets, on_progress)
+    draft_result = {"drafted": 0, "api_calls": 0}
+    if "draft" in phases:
+        if on_progress:
+            on_progress("Phase 4: Drafting outreach...")
+        draft_result = draft_emails(conn, user_name, user_bullets, on_progress)
+        total_api_calls += draft_result.get("api_calls", 0)
 
-    # Update run log
-    conn.execute(
-        "UPDATE run_log SET finished_at = CURRENT_TIMESTAMP, jobs_found = ?, jobs_scored = ?, jobs_enriched = ? WHERE id = ?",
-        (discovered["new"], scored, enriched, run_id),
-    )
+    # Update run log (api_calls column may not exist on older schemas — handle gracefully)
+    try:
+        conn.execute(
+            "UPDATE run_log SET finished_at = CURRENT_TIMESTAMP, jobs_found = ?, jobs_scored = ?, jobs_enriched = ?, api_calls = ? WHERE id = ?",
+            (discovered["new"], score_result["scored"], enrich_result["enriched"], total_api_calls, run_id),
+        )
+    except Exception:
+        conn.execute(
+            "UPDATE run_log SET finished_at = CURRENT_TIMESTAMP, jobs_found = ?, jobs_scored = ?, jobs_enriched = ? WHERE id = ?",
+            (discovered["new"], score_result["scored"], enrich_result["enriched"], run_id),
+        )
     conn.commit()
+
+    if on_progress:
+        on_progress(f"Done — {total_api_calls} AI calls used this run")
 
     return {
         "discovered": discovered,
-        "scored": scored,
-        "enriched": enriched,
-        "drafted": drafted,
+        "scored": score_result,
+        "enriched": enrich_result,
+        "drafted": draft_result,
+        "api_calls": total_api_calls,
+        "phases_run": list(phases),
     }
