@@ -1645,9 +1645,12 @@ if _regen_and_rescore or _rescore_clicked:
             _api_count = score_result.get("api_calls", 0)
             _scored = score_result.get("scored", 0)
             _stale = score_result.get("skipped_stale", 0)
+            _failed = score_result.get("failed", 0)
             _label = f"Done — {_scored} jobs re-scored, {_api_count} AI calls"
             if _stale:
                 _label += f", {_stale} stale skipped"
+            if _failed:
+                _label += f", {_failed} failed (run Score to retry)"
             status.update(label=_label, state="complete", expanded=False)
             st.cache_resource.clear()
             st.rerun()

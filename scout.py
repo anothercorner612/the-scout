@@ -549,6 +549,7 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30, user_id=
             on_progress(f"Skipped {stale_count} stale job(s) older than {max_age_days} days")
 
     scored_count = 0
+    failed_count = 0
     api_calls = 0
     batch_size = 5
     desc_limit = 800
@@ -590,8 +591,10 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30, user_id=
                 s = max(0, min(100, result.get("score", 0)))
                 _save_score(result["id"], s, result.get("tier", "no_match"), result.get("reasoning", ""))
                 scored_count += 1
-        except Exception:
+        except Exception as batch_err:
             # Fallback: score one by one
+            if on_progress:
+                on_progress(f"Batch {batch_num} failed ({batch_err}), retrying individually...")
             for job in batch:
                 try:
                     desc = (job.get("description") or "")[:desc_limit]
@@ -607,14 +610,18 @@ def score(conn, scoring_system=None, on_progress=None, max_age_days=30, user_id=
                         s = max(0, min(100, result["score"]))
                         _save_score(job["id"], s, result.get("tier", "no_match"), result.get("reasoning", ""))
                         scored_count += 1
+                    else:
+                        failed_count += 1
                 except Exception:
-                    pass
+                    failed_count += 1
                 time.sleep(1)
 
         conn.commit()
         time.sleep(1)
 
-    return {"scored": scored_count, "skipped_stale": stale_count, "api_calls": api_calls}
+    if failed_count and on_progress:
+        on_progress(f"Warning: {failed_count} job(s) failed to score — run Score again to retry")
+    return {"scored": scored_count, "skipped_stale": stale_count, "failed": failed_count, "api_calls": api_calls}
 
 
 # ============================================================
