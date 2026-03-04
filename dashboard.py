@@ -698,6 +698,75 @@ ensure_schema()
 
 
 # ============================================================
+# SESSION COOKIE HELPERS (persistent login across app restarts)
+# ============================================================
+
+import hmac as _hmac
+import time as _time
+import streamlit.components.v1 as _components
+
+_SESSION_SECRET = os.getenv("SESSION_SECRET", "the-scout-2026-session-key")
+_SESSION_COOKIE = "scout_session"
+_SESSION_MAX_AGE_DAYS = 30
+
+
+def _make_session_token(user_id: int) -> str:
+    """Create an HMAC-signed session token: user_id:timestamp:signature."""
+    payload = f"{user_id}:{int(_time.time())}"
+    sig = _hmac.new(_SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
+    return f"{payload}:{sig}"
+
+
+def _verify_session_token(token: str):
+    """Verify token and return user_id, or None if invalid/expired."""
+    try:
+        parts = token.split(":")
+        if len(parts) != 3:
+            return None
+        user_id, ts, sig = int(parts[0]), int(parts[1]), parts[2]
+        expected = _hmac.new(
+            _SESSION_SECRET.encode(), f"{user_id}:{ts}".encode(), hashlib.sha256
+        ).hexdigest()[:16]
+        if not _hmac.compare_digest(sig, expected):
+            return None
+        if _time.time() - ts > _SESSION_MAX_AGE_DAYS * 86400:
+            return None
+        return user_id
+    except (ValueError, TypeError):
+        return None
+
+
+def _set_session_cookie(user_id: int):
+    """Inject JS to set a persistent session cookie."""
+    token = _make_session_token(user_id)
+    max_age = _SESSION_MAX_AGE_DAYS * 86400
+    _components.html(
+        f'<script>document.cookie="{_SESSION_COOKIE}={token}; path=/; max-age={max_age}; SameSite=Lax";</script>',
+        height=0,
+    )
+
+
+def _clear_session_cookie():
+    """Inject JS to delete the session cookie."""
+    _components.html(
+        f'<script>document.cookie="{_SESSION_COOKIE}=; path=/; max-age=0; SameSite=Lax";</script>',
+        height=0,
+    )
+
+
+def _get_cookie_user_id():
+    """Try to read and verify the session cookie. Returns user_id or None."""
+    try:
+        cookies = st.context.cookies
+        token = cookies.get(_SESSION_COOKIE)
+        if token:
+            return _verify_session_token(token)
+    except Exception:
+        pass
+    return None
+
+
+# ============================================================
 # AUTH HELPERS (simple hash-based, upgraded to bcrypt in Phase 5)
 # ============================================================
 
@@ -1205,6 +1274,7 @@ def show_onboarding():
                 user = login_user(username, password)
                 if user:
                     st.session_state["user_id"] = user["id"]
+                    _set_session_cookie(user["id"])
                     st.rerun()
                 else:
                     st.error("Invalid username or password")
@@ -1228,6 +1298,7 @@ def show_onboarding():
                     if register_user(new_username, new_password, new_name, new_email):
                         user = login_user(new_username, new_password)
                         st.session_state["user_id"] = user["id"]
+                        _set_session_cookie(user["id"])
                         st.rerun()
                     else:
                         st.error("Username already taken")
@@ -1265,6 +1336,7 @@ def show_profile_setup(user):
             unsafe_allow_html=True,
         )
         if st.button("Log out", key="setup_logout_btn"):
+            _clear_session_cookie()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
@@ -1417,14 +1489,19 @@ def show_profile_setup(user):
 # MAIN APP FLOW
 # ============================================================
 
-# Check if user is logged in
+# Check if user is logged in — try restoring from cookie first
 if "user_id" not in st.session_state:
-    show_onboarding()
-    st.stop()
+    cookie_uid = _get_cookie_user_id()
+    if cookie_uid:
+        st.session_state["user_id"] = cookie_uid
+    else:
+        show_onboarding()
+        st.stop()
 
 # Load current user
 current_user = get_user(st.session_state["user_id"])
 if not current_user:
+    _clear_session_cookie()
     del st.session_state["user_id"]
     st.rerun()
 
@@ -1659,6 +1736,7 @@ with st.sidebar:
             st.rerun()
     with acct_col2:
         if st.button("Log out", key="logout_btn", use_container_width=True):
+            _clear_session_cookie()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
