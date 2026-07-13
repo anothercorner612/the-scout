@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import httpx
 import os
 import json
 import hashlib
@@ -8,6 +9,7 @@ from html import escape as _esc
 from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types as _genai_types
 from scout import run_pipeline
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -85,7 +87,16 @@ if not _gemini_key:
         _gemini_key = st.secrets.get("gemini_key")
     except Exception:
         pass
-ai_client = genai.Client(api_key=_gemini_key)
+ai_client = genai.Client(
+    api_key=_gemini_key,
+    http_options=_genai_types.HttpOptions(
+        timeout=60_000,
+        retry_options=_genai_types.HttpRetryOptions(
+            attempts=4, initial_delay=1.0, max_delay=20.0, exp_base=2.0,
+            http_status_codes=[429, 500, 502, 503, 504],
+        ),
+    ),
+)
 
 # --- Database: Turso (cloud) or local SQLite ---
 _turso_url = os.getenv("TURSO_URL")
@@ -672,7 +683,7 @@ def ensure_schema():
         if col not in existing:
             try:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
-            except Exception:
+            except (sqlite3.OperationalError, httpx.HTTPStatusError):
                 pass
 
     # Add user_id to contacts if missing
@@ -680,7 +691,7 @@ def ensure_schema():
     if "user_id" not in contacts_cols:
         try:
             conn.execute("ALTER TABLE contacts ADD COLUMN user_id INTEGER")
-        except Exception:
+        except (sqlite3.OperationalError, httpx.HTTPStatusError):
             pass
 
     # Add api_calls and user_id to run_log if missing
@@ -689,7 +700,7 @@ def ensure_schema():
         if col not in run_log_cols:
             try:
                 conn.execute(f"ALTER TABLE run_log ADD COLUMN {col} {col_type}")
-            except Exception:
+            except (sqlite3.OperationalError, httpx.HTTPStatusError):
                 pass
 
     conn.commit()
@@ -706,7 +717,15 @@ import hmac as _hmac
 import time as _time
 import streamlit.components.v1 as _components
 
-_SESSION_SECRET = os.getenv("SESSION_SECRET", "the-scout-2026-session-key")
+_SESSION_SECRET = os.getenv("SESSION_SECRET")
+if not _SESSION_SECRET:
+    try:
+        _SESSION_SECRET = st.secrets.get("SESSION_SECRET")
+    except Exception:
+        pass
+if not _SESSION_SECRET:
+    st.error("SESSION_SECRET is not configured. Set it as an environment variable or in st.secrets before running this app.")
+    st.stop()
 _SESSION_COOKIE = "scout_session"
 _SESSION_MAX_AGE_DAYS = 30
 
@@ -1127,12 +1146,12 @@ def generate_materials(job, user=None):
         resume_summary = resume_data.get("summary", "")
         resume_skills = resume_data.get("skills", "")
         resume_text = _build_resume_text_from_json(resume_data)
-        user_name = user.get("name", "the candidate")
+        user_name = user.get("name") or "the candidate"
     else:
         resume_summary = ""
         resume_skills = ""
         resume_text = ""
-        user_name = user.get("name", "the candidate") if user else "the candidate"
+        user_name = (user.get("name") or "the candidate") if user else "the candidate"
 
     prompt = f"""You are a job application assistant. Given a job description and {user_name}'s resume, produce ALL FOUR outputs below in a single JSON response.
 
@@ -1179,12 +1198,12 @@ def answer_application_question(job, question, user=None):
         resume_summary = resume_data.get("summary", "")
         resume_skills = resume_data.get("skills", "")
         resume_text = _build_resume_text_from_json(resume_data)
-        user_name = user.get("name", "the candidate")
+        user_name = user.get("name") or "the candidate"
     else:
         resume_summary = ""
         resume_skills = ""
         resume_text = ""
-        user_name = user.get("name", "the candidate") if user else "the candidate"
+        user_name = (user.get("name") or "the candidate") if user else "the candidate"
 
     prompt = f"""You are helping {user_name} answer an application question for the "{job['title']}" role at {job['company']}.
 
@@ -1253,7 +1272,7 @@ def find_network_matches(jobs_df, contacts_df):
         if not company:
             continue
         matched = contact_companies[
-            contact_companies["company_lower"].str.contains(company, na=False)
+            contact_companies["company_lower"].str.contains(company, na=False, regex=False)
             | contact_companies["company_lower"].apply(lambda c: company in c if c else False)
         ]
         if not matched.empty:
@@ -1393,7 +1412,10 @@ def show_profile_setup(user):
     if uploaded_pdf is not None:
         if st.button("Parse resume with AI", type="primary"):
             with st.spinner("Reading your resume..."):
-                parsed = parse_resume_pdf(uploaded_pdf.read())
+                try:
+                    parsed = parse_resume_pdf(uploaded_pdf.read())
+                except Exception:
+                    parsed = None
             if parsed and parsed.get("bullets"):
                 st.session_state["parsed_resume"] = parsed
                 st.success("Resume parsed — review the extracted data below, then save.")
@@ -1457,9 +1479,12 @@ def show_profile_setup(user):
             update_user_field(user["id"], "goals_text", goals)
             if resume_data:
                 with st.spinner("Generating your personalized scoring criteria..."):
-                    prompt = generate_scoring_prompt(resume_data, goals)
-                    update_user_field(user["id"], "scoring_prompt", prompt)
-                st.success("Search criteria and scoring prompt saved.")
+                    try:
+                        prompt = generate_scoring_prompt(resume_data, goals)
+                        update_user_field(user["id"], "scoring_prompt", prompt)
+                        st.success("Search criteria and scoring prompt saved.")
+                    except Exception:
+                        st.warning("Search criteria saved, but generating the scoring prompt failed. Try saving again.")
             else:
                 st.success("Search criteria saved. Upload a resume to unlock personalized scoring.")
             st.rerun()
@@ -1938,8 +1963,9 @@ if not hot.empty:
             details.append(
                 f"<strong>Reach out to:</strong> {_h(job['hiring_manager_name'])} ({hm_title})"
             )
-        if job.get("company_win") and job["company_win"] != "No recent news found.":
-            win_text = _h(job["company_win"][:120])
+        company_win = _safe_str(job.get("company_win"))
+        if company_win and company_win != "No recent news found.":
+            win_text = _h(company_win[:120])
             details.append(f"<strong>Recent:</strong> {win_text}...")
 
         if details:

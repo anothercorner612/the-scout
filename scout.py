@@ -14,10 +14,20 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types as genai_types
 
 load_dotenv(Path(__file__).parent / ".env")
 
-ai_client = genai.Client(api_key=os.getenv("gemini_key"))
+ai_client = genai.Client(
+    api_key=os.getenv("gemini_key"),
+    http_options=genai_types.HttpOptions(
+        timeout=60_000,
+        retry_options=genai_types.HttpRetryOptions(
+            attempts=4, initial_delay=1.0, max_delay=20.0, exp_base=2.0,
+            http_status_codes=[429, 500, 502, 503, 504],
+        ),
+    ),
+)
 
 MODELS = {
     "pro": "gemini-2.5-pro",
@@ -698,6 +708,7 @@ def enrich(conn, on_progress=None, max_age_days=30, user_id=None) -> dict:
             win_raw = win_response.text or ""
             salary_raw = salary_response.text or ""
 
+            salary_section = f"SALARY RESEARCH:\n{salary_raw[:1000]}" if salary_raw else ""
             parse_response = ai_client.models.generate_content(
                 model=MODELS["flash"],
                 contents=f"""Extract structured data from these research notes.
@@ -708,7 +719,7 @@ HIRING MANAGER RESEARCH:
 COMPANY WIN / CULTURE RESEARCH:
 {win_raw[:1500]}
 
-{f"SALARY RESEARCH:\\n{salary_raw[:1000]}" if salary_raw else ""}
+{salary_section}
 
 Return ONLY valid JSON:
 {{"name":"<full name or Unknown>","title":"<job title or Unknown>","win":"<one sentence company achievement or No recent news found.>","glassdoor_rating":"<e.g. 3.8/5 or Unknown>","culture_flags":"<2-3 short comma-separated flags like Remote-friendly, Good WLB, Recent layoffs — or Unknown>","salary_min":<integer or null>,"salary_max":<integer or null>,"salary_source":"<e.g. Glassdoor, Levels.fyi, job posting, or null>"}}""",
@@ -858,11 +869,11 @@ def run_pipeline(
 
     # Insert run log (with user_id if the column exists)
     try:
-        conn.execute("INSERT INTO run_log (user_id) VALUES (?)", (user_id,))
+        cur = conn.execute("INSERT INTO run_log (user_id) VALUES (?) RETURNING id", (user_id,))
     except Exception:
-        conn.execute("INSERT INTO run_log DEFAULT VALUES")
+        cur = conn.execute("INSERT INTO run_log DEFAULT VALUES RETURNING id")
+    run_id = cur.fetchone()[0]
     conn.commit()
-    run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     total_api_calls = 0
 
