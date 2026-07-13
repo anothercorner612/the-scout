@@ -1938,8 +1938,9 @@ if not hot.empty:
             details.append(
                 f"<strong>Reach out to:</strong> {_h(job['hiring_manager_name'])} ({hm_title})"
             )
-        if job.get("company_win") and job["company_win"] != "No recent news found.":
-            win_text = _h(job["company_win"][:120])
+        company_win = _safe_str(job.get("company_win"))
+        if company_win and company_win != "No recent news found.":
+            win_text = _h(company_win[:120])
             details.append(f"<strong>Recent:</strong> {win_text}...")
 
         if details:
