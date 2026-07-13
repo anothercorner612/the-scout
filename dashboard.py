@@ -1118,15 +1118,17 @@ def _format_date_badge(job):
 
 
 def _job_age_days(df: pd.DataFrame) -> pd.Series:
-    """Days since posted_at (falling back to discovered_at), tz-naive. NaT where neither is known."""
-    posted = pd.to_datetime(df.get("posted_at"), errors="coerce")
-    if getattr(posted.dt, "tz", None) is not None:
-        posted = posted.dt.tz_localize(None)
-    discovered = pd.to_datetime(df.get("discovered_at"), errors="coerce")
-    if getattr(discovered.dt, "tz", None) is not None:
-        discovered = discovered.dt.tz_localize(None)
+    """Days since posted_at (falling back to discovered_at). NaN where neither is known.
+
+    format="mixed" + utc=True are both required because posted_at/discovered_at values
+    come from different sources over time and mix naive/offset-aware strings and
+    differing formats — pandas otherwise infers one format for the whole column and
+    silently NaTs (or errors on) rows that don't match it.
+    """
+    posted = pd.to_datetime(df.get("posted_at"), errors="coerce", utc=True, format="mixed")
+    discovered = pd.to_datetime(df.get("discovered_at"), errors="coerce", utc=True, format="mixed")
     effective = posted.fillna(discovered)
-    return (pd.Timestamp.now() - effective).dt.days
+    return (pd.Timestamp.now(tz="UTC") - effective).dt.days
 
 
 def _build_resume_text_from_json(resume_json: dict) -> str:
