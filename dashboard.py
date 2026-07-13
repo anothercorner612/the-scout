@@ -1117,6 +1117,18 @@ def _format_date_badge(job):
     return ""
 
 
+def _job_age_days(df: pd.DataFrame) -> pd.Series:
+    """Days since posted_at (falling back to discovered_at), tz-naive. NaT where neither is known."""
+    posted = pd.to_datetime(df.get("posted_at"), errors="coerce")
+    if getattr(posted.dt, "tz", None) is not None:
+        posted = posted.dt.tz_localize(None)
+    discovered = pd.to_datetime(df.get("discovered_at"), errors="coerce")
+    if getattr(discovered.dt, "tz", None) is not None:
+        discovered = discovered.dt.tz_localize(None)
+    effective = posted.fillna(discovered)
+    return (pd.Timestamp.now() - effective).dt.days
+
+
 def _build_resume_text_from_json(resume_json: dict) -> str:
     if not resume_json or "bullets" not in resume_json:
         return ""
@@ -1821,6 +1833,12 @@ with st.sidebar:
             default=STATUSES,
         )
 
+        show_older = st.checkbox(
+            "Show listings older than 30 days",
+            value=False,
+            help="Older postings are usually no longer accepting applications. Uncheck to hide them from the lists below.",
+        )
+
         st.divider()
 
     # LinkedIn network
@@ -1860,12 +1878,18 @@ if df.empty:
 contacts_df = load_contacts(user_id)
 
 # Apply filters
+age_days = _job_age_days(df)
+age_ok = (
+    pd.Series(True, index=df.index) if show_older
+    else (age_days.isna() | (age_days <= 30) | (df["status"] != "Unexplored"))
+)
 filtered = df[
     (df["score"].fillna(0) >= score_range[0])
     & (df["score"].fillna(0) <= score_range[1])
     & (df["platform"].isin(platforms))
     & (df["tier"].fillna("no_match").isin(tiers))
     & (df["status"].isin(statuses_filter))
+    & age_ok
 ]
 
 # Compute network matches
